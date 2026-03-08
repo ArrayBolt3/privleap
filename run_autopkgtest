@@ -57,24 +57,27 @@ Options:
 }
 
 run_autopkgtest() {
-  local arg
-  arg="${1:-}"
-  if [ "${arg}" = '--help' ] || [ "${arg}" = '-h' ] || [ "${arg}" = '-?' ]; then
-    print_usage
-    exit 0
-  fi
-
   if [ "$(id -u)" = '0' ]; then
     1>&2 echo 'Do not run this script as root!'
     exit 1
   fi
 
-  if [ "${arg}" = '--reset-tarball' ]; then
-    rm -f "${autopkgtest_tarball_path}"
-  elif [ -n "${arg}" ]; then
-    1>&2 echo "Unrecognized argument: '${arg}'. Try 'run_autopkgtest --help' for usage info."
-    exit 1
-  fi
+  while [ -n "${1:-}" ]; do
+    case "$1" in
+      --help|-h|-?)
+        print_usage
+        exit 0
+        ;;
+      --reset-tarball)
+        rm -f "${autopkgtest_tarball_path}"
+        shift
+        ;;
+      *)
+        1>&2 echo "Unrecognized argument: '$1'. Try 'run_autopkgtest --help' for usage info."
+        exit 1
+        ;;
+    esac
+  done
 
   ## Dependency checks
   if ! [ -x '/usr/bin/unshare' ]; then
