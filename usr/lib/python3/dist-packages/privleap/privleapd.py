@@ -20,7 +20,6 @@ import os
 import pwd
 import grp
 import subprocess
-import re
 import logging
 import time
 from enum import Enum
@@ -1764,9 +1763,6 @@ def main() -> NoReturn:
     ## non-owners.
     PrivleapdGlobal.old_umask = os.umask(0o077)
 
-    logging.basicConfig(
-        format="%(funcName)s: %(levelname)s: %(message)s", level=logging.INFO
-    )
     for idx, arg in enumerate(sys.argv):
         if idx == 0:
             continue

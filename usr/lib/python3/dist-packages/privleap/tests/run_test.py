@@ -2289,6 +2289,11 @@ def write_new_config_file(bad_config_file: str) -> bool:
                 PlTestGlobal.privleap_conf_dir, "added_actions_bad.conf"
             )
             target_contents = PlTestData.added_actions_bad_config_file
+        case "bad_target_ident_config_file":
+            target_path = Path(
+                PlTestGlobal.privleap_conf_dir, "bad_target_ident.conf"
+            )
+            target_contents = PlTestData.bad_target_ident_config_file
         case "unrecognized_header_config_file":
             target_path = Path(
                 PlTestGlobal.privleap_conf_dir, "unrec_header.conf"
@@ -3391,13 +3396,19 @@ def privleapd_send_random_garbage_test(bogus: str) -> bool:
     return False
 
 
-def privleapd_config_reload_test(bogus: str) -> bool:
+def privleapd_config_reload_test(warning_type: str) -> bool:
     """
     Reloads privleapd's configuration, expecting it to succeed.
     """
 
-    if bogus != "":
-        return False
+    extra_reload_config_lines: list[str] = []
+    match warning_type:
+        case "bad_ident":
+            extra_reload_config_lines = PlTestData.config_reload_bad_ident_lines
+        case "":
+            pass
+        case _:
+            return False
     discard_privleapd_stderr()
     assert_success: bool = True
     control_session: PrivleapSession = PrivleapSession(is_control_session=True)
@@ -3409,7 +3420,9 @@ def privleapd_config_reload_test(bogus: str) -> bool:
             type(control_server_msg),
         )
         assert_success = False
-    if not compare_privleapd_stderr(PlTestData.config_reload_success_lines):
+    if not compare_privleapd_stderr(
+        extra_reload_config_lines + PlTestData.config_reload_success_lines
+    ):
         assert_success = False
     return assert_success
 
@@ -4292,6 +4305,49 @@ def run_privleapd_tests() -> None:
         try_remove_file,
         str(Path(PlTestGlobal.privleap_conf_dir, "added_actions_bad.conf")),
         "Remove bad added actions config file",
+    )
+    # ---
+    privleapd_assert_function(
+        write_new_config_file,
+        "bad_target_ident_config_file",
+        "Write config file with bad target identities",
+    )
+    privleapd_assert_function(
+        privleapd_config_reload_test,
+        "bad_ident",
+        "Reload config with bad target identities",
+    )
+    privleapd_assert_command(
+        [
+            "sudo",
+            "-u",
+            "privleaptestone",
+            "leaprun",
+            "test-act-bad-target-user",
+        ],
+        exit_code=1,
+        stderr_data=PlTestData.test_act_bad_target_user_unauthorized,
+    )
+    privleapd_assert_command(
+        [
+            "sudo",
+            "-u",
+            "privleaptestone",
+            "leaprun",
+            "test-act-bad-target-group",
+        ],
+        exit_code=1,
+        stderr_data=PlTestData.test_act_bad_target_group_unauthorized,
+    )
+    privleapd_assert_function(
+        try_remove_file,
+        str(Path(PlTestGlobal.privleap_conf_dir, "bad_target_ident.conf")),
+        "Remove bad target identities config file",
+    )
+    privleapd_assert_function(
+        privleapd_config_reload_test,
+        "",
+        "Reload config without bad target identities",
     )
     # ---
     privleapd_assert_command(

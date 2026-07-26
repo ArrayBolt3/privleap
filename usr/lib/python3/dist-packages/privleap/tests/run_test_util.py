@@ -740,6 +740,16 @@ AuthorizedUsers=privleaptestone
 Commandecho 'test-act-added-bad'
 AuthorizedUsers=privleaptestone
 """
+    bad_target_ident_config_file: str = """[action:test-act-bad-target-user]
+Command=echo 'bad-target-user'
+AuthorizedUsers=privleaptestone
+TargetUser=idontexist1
+
+[action:test-act-bad-target-group]
+Command=echo 'bad-target-group'
+AuthorizedUsers=privleaptestone
+TargetGroup=idontexist2
+"""
     unrecognized_header_config_file: str = """[unrecognized-header]
 Command=echo 'unrecognized-header'
 AuthorizedUsers=root
@@ -970,6 +980,14 @@ User=privleaptestthree
     test_act_nonexistent_unauthorized: bytes = (
         b"ERROR: Account 'privleaptestone' (1002) is unauthorized to run "
         + b"action 'test-act-nonexistent'.\n"
+    )
+    test_act_bad_target_user_unauthorized: bytes = (
+        b"ERROR: Account 'privleaptestone' (1002) is unauthorized to run "
+        + b"action 'test-act-bad-target-user'.\n"
+    )
+    test_act_bad_target_group_unauthorized: bytes = (
+        b"ERROR: Account 'privleaptestone' (1002) is unauthorized to run "
+        + b"action 'test-act-bad-target-group'.\n"
     )
     test_act_added1_unauthorized: bytes = (
         b"ERROR: Account 'privleaptestone' (1002) is unauthorized to run "
@@ -1394,6 +1412,14 @@ User=privleaptestthree
         + "no-longer-allowed account 'privleaptesttwo'\n",
         "prune_disallowed_comm_sockets: INFO: Destroying comm socket for "
         + "no-longer-allowed account 'privleaptestthree'\n",
+    ]
+    config_reload_bad_ident_lines: list[str] = [
+        "__init__: WARNING: PrivleapAction: Account 'idontexist1' specified "
+        + "by field 'TargetUser' of action 'test-act-bad-target-user' does "
+        + "not exist.\n",
+        "__init__: WARNING: PrivleapAction: Group 'idontexist2' specified "
+        + "by field 'TargetGroup' of action 'test-act-bad-target-group' does "
+        + "not exist.\n",
     ]
     test_act_added1_success_lines: list[str] = [
         "handle_signal_message: INFO: Triggered action 'test-act-added1' "
