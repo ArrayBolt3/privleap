@@ -20,9 +20,16 @@ import stat
 import pwd
 import grp
 import re
+import logging
 from pathlib import Path
 from typing import Tuple, TypeAlias
 from enum import Enum
+
+
+## All privleap-related tools should use the same log output format.
+logging.basicConfig(
+    format="%(funcName)s: %(levelname)s: %(message)s", level=logging.INFO
+)
 
 
 class PrivleapSocketType(Enum):
@@ -1111,6 +1118,13 @@ class PrivleapSocket:
         self.backend_socket.close()
 
 
+class PrivleapTargetIdentMissingError(Exception):
+    """
+    Thrown during PrivleapAction construction if a target user or target group
+    does not exist.
+    """
+
+
 class PrivleapAction:
     """
     A single action defined by privleap's configuration.
@@ -1187,21 +1201,25 @@ class PrivleapAction:
             orig_target_user: str = target_user
             target_user = PrivleapCommon.normalize_user_id(target_user)
             if target_user is None:
-                raise ValueError(
-                    f"Account '{orig_target_user}' specified by field "
-                    f"'TargetUser' of action '{action_name}' does not "
-                    "exist!"
+                logging.warning(
+                    "PrivleapAction: Account '%s' specified by field "
+                    "'TargetUser' of action '%s' does not exist.",
+                    orig_target_user,
+                    action_name,
                 )
+                raise PrivleapTargetIdentMissingError()
 
         if target_group is not None:
             orig_target_group: str = target_group
             target_group = PrivleapCommon.normalize_group_id(target_group)
             if target_group is None:
-                raise ValueError(
-                    f"Group '{orig_target_group}' specified by field "
-                    f"'TargetGroup' of action '{action_name}' does not "
-                    "exist!"
+                logging.warning(
+                    "PrivleapAction: Group '%s' specified by field "
+                    "'TargetGroup' of action '%s' does not exist.",
+                    orig_target_group,
+                    action_name,
                 )
+                raise PrivleapTargetIdentMissingError()
 
         self.action_name = action_name
         self.action_command = action_command
@@ -1374,16 +1392,19 @@ class PrivleapCommon:
                                     "No authorized users or groups for "
                                     "action:",
                                 )
-                            action_output_list.append(
-                                PrivleapAction(
-                                    current_action_name,
-                                    current_action_command,
-                                    current_auth_users,
-                                    current_auth_groups,
-                                    current_target_user,
-                                    current_target_group,
+                            try:
+                                action_output_list.append(
+                                    PrivleapAction(
+                                        current_action_name,
+                                        current_action_command,
+                                        current_auth_users,
+                                        current_auth_groups,
+                                        current_target_user,
+                                        current_target_group,
+                                    )
                                 )
-                            )
+                            except PrivleapTargetIdentMissingError:
+                                pass
                             # We don't need to nullify current_action_name since
                             # we set its value below.
                             # current_action_name = None
@@ -1584,16 +1605,19 @@ class PrivleapCommon:
                     current_action_name,
                     "No authorized users or groups for action:",
                 )
-            action_output_list.append(
-                PrivleapAction(
-                    current_action_name,
-                    current_action_command,
-                    current_auth_users,
-                    current_auth_groups,
-                    current_target_user,
-                    current_target_group,
+            try:
+                action_output_list.append(
+                    PrivleapAction(
+                        current_action_name,
+                        current_action_command,
+                        current_auth_users,
+                        current_auth_groups,
+                        current_target_user,
+                        current_target_group,
+                    )
                 )
-            )
+            except PrivleapTargetIdentMissingError:
+                pass
 
         return (
             action_output_list,
