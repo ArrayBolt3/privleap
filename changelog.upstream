@@ -1,3 +1,22 @@
+commit 9c5fbc2987828c2fa8d71c31aa1ed4cf6ef0f9ab
+Merge: ceb58f6 5af499b
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Sun Jul 26 07:39:39 2026 -0400
+
+    Merge remote-tracking branch 'refs/remotes/ArrayBolt3/arraybolt3/trixie'
+
+commit 5af499b33f70923430771382f2c1d8680cab0c81
+Author: Aaron Rainbolt <arraybolt3@gmail.com>
+Date:   Sun Jul 26 00:01:54 2026 -0400
+
+    Do not crash if a TargetUser or TargetGroup for an action is invalid, simply ignore the action
+
+commit ceb58f6d2132cc2ea32b90041145ba9670f2a8b2
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Tue Jul 21 09:22:39 2026 +0000
+
+    bumped changelog version
+
 commit c8ba8208d9a83c4b84ae6220cf641ad8008422d9
 Merge: 8cd0c23 faa2400
 Author: Patrick Schleizer <adrelanos@whonix.org>
