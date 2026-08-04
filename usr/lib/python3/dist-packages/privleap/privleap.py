@@ -578,9 +578,8 @@ class PrivleapSession:
             self.backend_socket.settimeout(PrivleapCommon.socket_timeout)
 
         elif isinstance(session_info, socket.socket):
-            # normalize_user_name is skipped by callers that hold an already
-            # normalized name, so that an account database lookup (which may
-            # block on NSS) never lands on the server's main thread.
+            # Skipped by callers holding an already normalized name, so an
+            # NSS lookup never lands on the server's main thread.
             if user_name is not None and normalize_user_name:
                 orig_user_name: str = user_name
                 user_name = PrivleapCommon.normalize_user_id(user_name)
@@ -1262,13 +1261,9 @@ class PrivleapCommon:
     state_dir: Path = Path("/run/privleapd")
     control_path: Path = Path(state_dir, "control")
     comm_dir: Path = Path(state_dir, "comm")
-    ## Only an extremely poorly designed client or server will ever fail to
-    ## work quickly enough for this timeout to be too short. On the other hand,
-    ## a malicious client may attempt to lock up privleapd by sending
-    ## incomplete data and then hanging forever, so we timeout very quickly to
-    ## avoid this attack. This also bounds accept() on a listening socket, so
-    ## that a ready event that is stale by the time it is acted upon cannot
-    ## park the server's main thread (and thus stop its watchdog pings).
+    ## A malicious client may send incomplete data and hang forever, so reads
+    ## time out fast. Also bounds an opt-in accept(), so a stale ready event
+    ## cannot park the main thread and stop its watchdog pings.
     socket_timeout: float = 0.1
     config_file_regex: re.Pattern[str] = re.compile(r"[-A-Za-z0-9_]+\.conf\Z")
     user_name_regex: re.Pattern[str] = re.compile(r"[a-z_][-a-z0-9_]*\$?\Z")
