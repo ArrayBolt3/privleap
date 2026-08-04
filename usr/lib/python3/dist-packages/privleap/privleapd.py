@@ -119,7 +119,8 @@ class PrivleapdGlobal:
     allowed_group_list: list[str] = []
     expected_disallowed_user_list: list[str] = []
 
-    # Readable and writable by main thread only
+    # Set up by the main thread before any other thread starts, then only
+    # read: sd_notify() reads its socket from the watchdog thread as well.
     sdnotify_object: sdnotify.SystemdNotifier = sdnotify.SystemdNotifier()
 
     # Watchdog state. main_loop_heartbeat is written by the main thread on
@@ -138,8 +139,10 @@ class PrivleapdGlobal:
     main_loop_poll_timeout: float = 5.0
     # How long to keep trying to hand systemd a notification it is waiting on.
     sd_notify_retry_seconds: float = 5.0
-    # How long to pause after an accept that failed for lack of resources.
+    # How long to pause after an accept that failed for lack of resources,
+    # and when the pause currently in effect ends.
     accept_backoff_seconds: float = 0.5
+    accept_backoff_until: float = 0.0
 
     # Thread IPC mechanisms
     # control-to-main pipe read end, for main thread
@@ -298,7 +301,8 @@ def watchdog_loop() -> NoReturn:
 
 def report_accept_failure(error: Exception, message: str, *args: Any) -> None:
     """
-    Logs a failed accept, and pauses when it failed for lack of resources.
+    Logs a failed accept, and schedules a pause when it failed for lack of
+    resources.
 
     A connection that could not be accepted stays in the kernel's backlog, so
     the listening socket stays readable and the main loop is handed the same
@@ -318,7 +322,13 @@ def report_accept_failure(error: Exception, message: str, *args: Any) -> None:
         errno.ENOBUFS,
         errno.ENOMEM,
     ):
-        time.sleep(PrivleapdGlobal.accept_backoff_seconds)
+        # A deadline rather than a sleep: this runs with socket_list_lock
+        # held, and waiting here would block the control thread for the whole
+        # backoff, stalling leapctl create and destroy too. main_loop honours
+        # the deadline once it has released the lock.
+        PrivleapdGlobal.accept_backoff_until = (
+            time.monotonic() + PrivleapdGlobal.accept_backoff_seconds
+        )
 
 
 def send_msg_safe(session: PrivleapSession, msg: PrivleapMsg) -> bool:
@@ -463,8 +473,10 @@ def notify_pipe_write(notify_pipe: IO[bytes]) -> None:
     delivered the notification and nothing more needs writing. The write never
     blocks, so it is safe to do while holding a lock.
 
-    A full non-blocking pipe reports itself by returning None from a raw
-    write, and by raising from a buffered one, so both are handled.
+    The pipes used here are raw, and a raw non-blocking write reports a full
+    pipe by returning None rather than by raising. A buffered pipe would raise
+    instead, so that is caught too. Either way the byte is already pending, so
+    dropping this one changes nothing.
 
     May be called by any thread.
     """
@@ -472,6 +484,7 @@ def notify_pipe_write(notify_pipe: IO[bytes]) -> None:
     try:
         notify_pipe.write(b"\x00")
     except BlockingIOError:
+        # Nothing to do: a full pipe has already delivered the notification.
         pass
 
 
@@ -2038,6 +2051,17 @@ def main_loop() -> NoReturn:
                     )
                     socket_list_changed = True
                 PrivleapdGlobal.main_loop_heartbeat = time.monotonic()
+
+        # Outside the lock: a connection that could not be accepted stays in
+        # the backlog, so without a pause this loop spins on it at full speed.
+        # Waiting inside the lock instead would stall every control request
+        # for the same period.
+        backoff_remaining: float = (
+            PrivleapdGlobal.accept_backoff_until - time.monotonic()
+        )
+        if backoff_remaining > 0:
+            time.sleep(backoff_remaining)
+            PrivleapdGlobal.main_loop_heartbeat = time.monotonic()
 
 
 def print_usage() -> None:
