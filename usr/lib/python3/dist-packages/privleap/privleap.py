@@ -1333,7 +1333,10 @@ class PrivleapCommon:
 
         try:
             stat_result: os.stat_result = os.stat(file_id)
-        except OSError:
+        except (OSError, ValueError):
+            ## ValueError, not OSError, is what a NUL byte in the path raises,
+            ## so catching OSError alone would break the promise above for one
+            ## class of unexaminable path.
             return False
         if stat_result.st_uid != 0:
             return False
