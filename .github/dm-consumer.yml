@@ -6,4 +6,6 @@
 ## Per-repo parameters for developer-meta-files consumer workflows, read at
 ## workflow runtime. Here: extra apt packages the dist-ai test suites need.
 dist-ai-tests:
-  apt-packages: "python3 python3-pytest python3-hypothesis python3-sdnotify"
+  ## python3-pam: shim.py imports PAM at module scope, so without it the
+  ## shim dies at import and its refusal paths cannot be tested at all.
+  apt-packages: "python3 python3-pytest python3-hypothesis python3-sdnotify python3-pam"
