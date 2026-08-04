@@ -17,7 +17,12 @@ Type=notify
 NotifyAccess=main
 ExecStart=/usr/bin/privleapd
 ExecReload=/usr/bin/leapctl --reload
-WatchdogSec=10s
+## privleapd pings at a quarter of this and stops pinging once its main loop
+## has been stuck for half of it, so a genuinely wedged daemon is still caught
+## well inside the deadline. The deadline itself is generous because a loaded
+## or memory-pressured host can deschedule the process for several seconds at
+## a time, which is not a fault worth restarting over.
+WatchdogSec=30s
 Restart=always
 
 [Install]
