@@ -714,7 +714,9 @@ def handle_control_socket_conn(control_socket: PrivleapSocket) -> None:
     """
 
     try:
-        control_session: PrivleapSession = control_socket.get_session()
+        control_session: PrivleapSession = control_socket.get_session(
+            bounded=True
+        )
     except TimeoutError:
         # The ready event this came from has gone stale, there is nothing
         # waiting to be accepted anymore.
@@ -1354,7 +1356,7 @@ def handle_comm_socket_conn(comm_socket_info: PrivleapdSocketInfo) -> None:
 
     try:
         comm_session: PrivleapSession = (
-            comm_socket_info.listen_socket.get_session()
+            comm_socket_info.listen_socket.get_session(bounded=True)
         )
     except TimeoutError:
         # The ready event this came from has gone stale, there is nothing
@@ -2110,7 +2112,7 @@ def main() -> NoReturn:
         watchdog_thread: Thread = Thread(target=watchdog_loop, daemon=True)
         watchdog_thread.start()
     sd_notify("READY=1", must_arrive=True)
-    sd_notify("STATUS=Fully started", must_arrive=True)
+    sd_notify("STATUS=Fully started")
     if PrivleapdGlobal.test_mode:
         Path("/tmp/privleapd-ready-for-test").touch()
     main_loop()

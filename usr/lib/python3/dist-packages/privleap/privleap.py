@@ -1057,7 +1057,6 @@ class PrivleapSocket:
             os.chown(PrivleapCommon.control_path, 0, 0)
             os.chmod(PrivleapCommon.control_path, stat.S_IRUSR | stat.S_IWUSR)
             self.backend_socket.listen(10)
-            self.backend_socket.settimeout(PrivleapCommon.socket_timeout)
         else:
             if user_name is None:
                 raise ValueError(
@@ -1085,25 +1084,36 @@ class PrivleapSocket:
             os.chown(socket_path, target_uid, target_gid)
             os.chmod(socket_path, stat.S_IRUSR | stat.S_IWUSR)
             self.backend_socket.listen(10)
-            self.backend_socket.settimeout(PrivleapCommon.socket_timeout)
             self.user_name = user_name
 
         self.socket_type = socket_type
 
-    def get_session(self) -> PrivleapSession:
+    def get_session(self, bounded: bool = False) -> PrivleapSession:
         """
         Gets a session from the listening socket. For those used to using
         sockets directly, this is an analogue to socket.accept().
 
-        Raises TimeoutError if no connection is pending, so that a caller
-        acting on a ready event that has gone stale cannot block here.
+        Waits for a connection by default, which is what a caller that has
+        just started the client and now wants to serve it expects.
+
+        Set bounded to raise TimeoutError instead when nothing is pending.
+        That is for a caller acting on a readiness event, which may already be
+        stale by the time it is acted upon: privleapd accepts on the thread
+        that also pings its watchdog, so it cannot afford to wait there.
         """
 
         assert self.backend_socket is not None
 
-        # socket.accept returns a (socket, address) tuple, we only need the
-        # socket from this
-        session_socket: socket.socket = self.backend_socket.accept()[0]
+        saved_timeout: float | None = self.backend_socket.gettimeout()
+        if bounded:
+            self.backend_socket.settimeout(PrivleapCommon.socket_timeout)
+        try:
+            # socket.accept returns a (socket, address) tuple, we only need
+            # the socket from this
+            session_socket: socket.socket = self.backend_socket.accept()[0]
+        finally:
+            if bounded:
+                self.backend_socket.settimeout(saved_timeout)
         if self.socket_type == PrivleapSocketType.CONTROL:
             return PrivleapSession(session_socket, is_control_session=True)
 
