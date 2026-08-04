@@ -1097,8 +1097,9 @@ class PrivleapSocket:
 
         Set bounded to raise TimeoutError instead when nothing is pending.
         That is for a caller acting on a readiness event, which may already be
-        stale by the time it is acted upon: privleapd accepts on the thread
-        that also pings its watchdog, so it cannot afford to wait there.
+        stale by the time it is acted upon: privleapd accepts on its main
+        thread, and a park there stops that thread refreshing the heartbeat
+        its watchdog reads.
         """
 
         assert self.backend_socket is not None
@@ -1263,7 +1264,7 @@ class PrivleapCommon:
     comm_dir: Path = Path(state_dir, "comm")
     ## A malicious client may send incomplete data and hang forever, so reads
     ## time out fast. Also bounds an opt-in accept(), so a stale ready event
-    ## cannot park the main thread and stop its watchdog pings.
+    ## cannot park the main thread and stall the heartbeat its watchdog reads.
     socket_timeout: float = 0.1
     config_file_regex: re.Pattern[str] = re.compile(r"[-A-Za-z0-9_]+\.conf\Z")
     user_name_regex: re.Pattern[str] = re.compile(r"[a-z_][-a-z0-9_]*\$?\Z")

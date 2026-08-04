@@ -198,9 +198,20 @@ def sd_notify(state: str, must_arrive: bool = False) -> None:
             # Waiting is only acceptable for a message systemd waits for;
             # for a ping it would stall the thread proving we are alive.
             if time.monotonic() >= deadline:
-                logging.debug(
-                    "systemd notification socket is full, dropped '%s'", state
-                )
+                if must_arrive:
+                    # systemd is waiting for this one and will time the unit
+                    # out without it. Logging at debug would leave that
+                    # failure with no explanation anywhere.
+                    logging.error(
+                        "Could not hand systemd '%s'; it is waiting for it "
+                        "and will time this unit out",
+                        state,
+                    )
+                else:
+                    logging.debug(
+                        "systemd notification socket is full, dropped '%s'",
+                        state,
+                    )
                 return
             time.sleep(0.05)
         except Exception as e:
@@ -750,10 +761,15 @@ def handle_control_session(control_session: PrivleapSession) -> None:
         elif isinstance(control_msg, PrivleapControlClientReloadMsg):
             handle_control_reload_msg(control_session)
         else:
+            # Not sys.exit(): raised from the control thread it would only
+            # unwind that thread, and SystemExit escapes the loop's guard and
+            # is discarded by threading's excepthook -- killing the control
+            # socket with no log line at all, which is the exact failure that
+            # guard exists to prevent.
             logging.critical(
                 "privleapd mis-parsed a control command from the client!"
             )
-            sys.exit(2)
+            return
     finally:
         control_session.close_session()
 
@@ -929,10 +945,22 @@ def authorize_user(
         # We need to get the list of groups this user is a member of to
         # determine whether they are authorized or not.
         user_gid: int = pwd.getpwnam(user_name).pw_gid
-        group_list: list[str] = [
-            grp.getgrgid(gid).gr_name
-            for gid in os.getgrouplist(user_name, user_gid)
-        ]
+        # getgrouplist returns the primary GID whether or not a group entry
+        # exists for it, so an account whose primary group is unresolvable
+        # (a stale entry, or an LDAP lookup that failed) would otherwise
+        # raise here and lock that account out of every group-authorized
+        # action. user_in_allowed_group() already tolerates this.
+        group_list: list[str] = []
+        for gid in os.getgrouplist(user_name, user_gid):
+            try:
+                group_list.append(grp.getgrgid(gid).gr_name)
+            except KeyError:
+                logging.warning(
+                    "Account '%s' belongs to group id %d, which no longer "
+                    "exists; skipping it",
+                    user_name,
+                    gid,
+                )
         for group in group_list:
             if group in action.auth_groups:
                 return PrivleapdAuthStatus.AUTHORIZED
