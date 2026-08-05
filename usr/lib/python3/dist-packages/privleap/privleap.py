@@ -575,12 +575,7 @@ class PrivleapSession:
             self.backend_socket = socket.socket(family=socket.AF_UNIX)
             self.backend_socket.connect(str(socket_path))
 
-            # Only an extremely poorly designed client or server will ever
-            # fail to work quickly enough for a 0.1-second timeout to be too
-            # short. On the other hand, a malicious client may attempt to lock
-            # up privleapd by sending incomplete data and then hanging
-            # forever, so we timeout very quickly to avoid this attack.
-            self.backend_socket.settimeout(0.1)
+            self.backend_socket.settimeout(PrivleapCommon.socket_timeout)
 
         elif isinstance(session_info, socket.socket):
             if user_name is not None:
@@ -593,7 +588,7 @@ class PrivleapSession:
 
             self.backend_socket = session_info
             self.user_name = user_name
-            self.backend_socket.settimeout(0.1)
+            self.backend_socket.settimeout(PrivleapCommon.socket_timeout)
             self.is_server_side = True
 
         else:
@@ -1058,7 +1053,6 @@ class PrivleapSocket:
             self.backend_socket.bind(str(PrivleapCommon.control_path))
             os.chown(PrivleapCommon.control_path, 0, 0)
             os.chmod(PrivleapCommon.control_path, stat.S_IRUSR | stat.S_IWUSR)
-            self.backend_socket.listen(10)
         else:
             if user_name is None:
                 raise ValueError(
@@ -1085,9 +1079,11 @@ class PrivleapSocket:
             self.backend_socket.bind(str(socket_path))
             os.chown(socket_path, target_uid, target_gid)
             os.chmod(socket_path, stat.S_IRUSR | stat.S_IWUSR)
-            self.backend_socket.listen(10)
             self.user_name = user_name
 
+        assert self.backend_socket is not None
+        self.backend_socket.setblocking(False)
+        self.backend_socket.listen(10)
         self.socket_type = socket_type
 
     def get_session(self) -> PrivleapSession:
@@ -1244,6 +1240,12 @@ class PrivleapCommon:
     state_dir: Path = Path("/run/privleapd")
     control_path: Path = Path(state_dir, "control")
     comm_dir: Path = Path(state_dir, "comm")
+    # Only an extremely poorly designed client or server will ever fail to
+    # work quickly enough for a 0.1-second timeout to be too short. On the
+    # other hand, a malicious client may attempt to lock up privleapd by
+    # sending incomplete data and then hanging forever, so we timeout very
+    # quickly to avoid this attack.
+    socket_timeout: float = 0.1
     config_file_regex: re.Pattern[str] = re.compile(r"[-A-Za-z0-9_]+\.conf\Z")
     user_name_regex: re.Pattern[str] = re.compile(r"[a-z_][-a-z0-9_]*\$?\Z")
     uid_regex: re.Pattern[str] = re.compile(r"[0-9]+\Z")
@@ -1370,7 +1372,7 @@ class PrivleapCommon:
                             if current_action_command is None:
                                 return PrivleapCommon.find_bad_config_header(
                                     config_file,
-                                    current_header_name,
+                                    current_action_name,
                                     "No command configured for action:",
                                 )
                             if not PrivleapCommon.validate_id(
@@ -1637,16 +1639,15 @@ class PrivleapCommon:
         """
 
         line_idx: int = 0
+        line_idx_str: str = "UNKNOWN_LINE"
         with open(config_file, "r", encoding="utf-8") as conf_stream:
             for line in conf_stream:
                 line_idx += 1
                 line = line.strip()
                 if line == f"[action:{target_header}]":
-                    return (
-                        f"{config_file}:{line_idx}:error:{msg} "
-                        f"'{target_header}'"
-                    )
-        return ""
+                    line_idx_str = str(line_idx)
+                    break
+        return f"{config_file}:{line_idx_str}:error:{msg} '{target_header}'"
 
     @staticmethod
     def normalize_user_id(user_name: str) -> str | None:
