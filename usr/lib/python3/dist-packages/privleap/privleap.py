@@ -534,7 +534,6 @@ class PrivleapSession:
         session_info: str | socket.socket | None = None,
         user_name: str | None = None,
         is_control_session: bool = False,
-        normalize_user_name: bool = True,
     ):
 
         self.user_name: str | None = None
@@ -575,12 +574,11 @@ class PrivleapSession:
 
             self.backend_socket = socket.socket(family=socket.AF_UNIX)
             self.backend_socket.connect(str(socket_path))
+
             self.backend_socket.settimeout(PrivleapCommon.socket_timeout)
 
         elif isinstance(session_info, socket.socket):
-            # Skipped by callers holding an already normalized name, so an
-            # NSS lookup never lands on the server's main thread.
-            if user_name is not None and normalize_user_name:
+            if user_name is not None:
                 orig_user_name: str = user_name
                 user_name = PrivleapCommon.normalize_user_id(user_name)
                 if user_name is None:
@@ -1055,7 +1053,6 @@ class PrivleapSocket:
             self.backend_socket.bind(str(PrivleapCommon.control_path))
             os.chown(PrivleapCommon.control_path, 0, 0)
             os.chmod(PrivleapCommon.control_path, stat.S_IRUSR | stat.S_IWUSR)
-            self.backend_socket.listen(10)
         else:
             if user_name is None:
                 raise ValueError(
@@ -1082,49 +1079,30 @@ class PrivleapSocket:
             self.backend_socket.bind(str(socket_path))
             os.chown(socket_path, target_uid, target_gid)
             os.chmod(socket_path, stat.S_IRUSR | stat.S_IWUSR)
-            self.backend_socket.listen(10)
             self.user_name = user_name
 
+        assert self.backend_socket is not None
+        self.backend_socket.setblocking(False)
+        self.backend_socket.listen(10)
         self.socket_type = socket_type
 
-    def get_session(self, bounded: bool = False) -> PrivleapSession:
+    def get_session(self) -> PrivleapSession:
         """
         Gets a session from the listening socket. For those used to using
         sockets directly, this is an analogue to socket.accept().
-
-        Waits for a connection by default, which is what a caller that has
-        just started the client and now wants to serve it expects.
-
-        Set bounded to raise TimeoutError instead when nothing is pending.
-        That is for a caller acting on a readiness event, which may already be
-        stale by the time it is acted upon: privleapd accepts on its main
-        thread, and a park there stops that thread refreshing the heartbeat
-        its watchdog reads.
         """
 
         assert self.backend_socket is not None
 
-        saved_timeout: float | None = self.backend_socket.gettimeout()
-        if bounded:
-            self.backend_socket.settimeout(PrivleapCommon.socket_timeout)
-        try:
-            # socket.accept returns a (socket, address) tuple, we only need
-            # the socket from this
-            session_socket: socket.socket = self.backend_socket.accept()[0]
-        finally:
-            if bounded:
-                self.backend_socket.settimeout(saved_timeout)
+        # socket.accept returns a (socket, address) tuple, we only need the
+        # socket from this
+        session_socket: socket.socket = self.backend_socket.accept()[0]
         if self.socket_type == PrivleapSocketType.CONTROL:
             return PrivleapSession(session_socket, is_control_session=True)
 
-        # self.user_name was normalized when this listening socket was
-        # created, so it does not need normalizing again here.
         assert self.user_name is not None
         return PrivleapSession(
-            session_socket,
-            user_name=self.user_name,
-            is_control_session=False,
-            normalize_user_name=False,
+            session_socket, user_name=self.user_name, is_control_session=False
         )
 
     def close(self) -> None:
@@ -1262,9 +1240,11 @@ class PrivleapCommon:
     state_dir: Path = Path("/run/privleapd")
     control_path: Path = Path(state_dir, "control")
     comm_dir: Path = Path(state_dir, "comm")
-    ## A malicious client may send incomplete data and hang forever, so reads
-    ## time out fast. Also bounds an opt-in accept(), so a stale ready event
-    ## cannot park the main thread and stall the heartbeat its watchdog reads.
+    # Only an extremely poorly designed client or server will ever fail to
+    # work quickly enough for a 0.1-second timeout to be too short. On the
+    # other hand, a malicious client may attempt to lock up privleapd by
+    # sending incomplete data and then hanging forever, so we timeout very
+    # quickly to avoid this attack.
     socket_timeout: float = 0.1
     config_file_regex: re.Pattern[str] = re.compile(r"[-A-Za-z0-9_]+\.conf\Z")
     user_name_regex: re.Pattern[str] = re.compile(r"[a-z_][-a-z0-9_]*\$?\Z")
@@ -1325,19 +1305,10 @@ class PrivleapCommon:
     def check_secure_file_permissions(file_id: str | int) -> bool:
         """
         Returns True if the file pointed to by the path or file descriptor in
-        file_id is owned by UID 0 / GID 0 and is not world-writable. A file
-        that cannot be examined at all is not safe to use, so it returns
-        False rather than raising: a caller that checked the path exists a
-        moment ago must not be taken down by it having gone away since.
+        file_id is owned by UID 0 / GID 0 and is not world-writable.
         """
 
-        try:
-            stat_result: os.stat_result = os.stat(file_id)
-        except (OSError, ValueError):
-            ## ValueError, not OSError, is what a NUL byte in the path raises,
-            ## so catching OSError alone would break the promise above for one
-            ## class of unexaminable path.
-            return False
+        stat_result: os.stat_result = os.stat(file_id)
         if stat_result.st_uid != 0:
             return False
         if stat_result.st_gid != 0:
@@ -1399,9 +1370,6 @@ class PrivleapCommon:
                             assert current_header_name is not None
                             assert current_action_name is not None
                             if current_action_command is None:
-                                ## The action name, not the header name:
-                                ## find_bad_config_header adds the "action:"
-                                ## prefix back itself.
                                 return PrivleapCommon.find_bad_config_header(
                                     config_file,
                                     current_action_name,
@@ -1671,19 +1639,15 @@ class PrivleapCommon:
         """
 
         line_idx: int = 0
+        line_idx_str: str = "UNKNOWN_LINE"
         with open(config_file, "r", encoding="utf-8") as conf_stream:
             for line in conf_stream:
                 line_idx += 1
                 line = line.strip()
                 if line == f"[action:{target_header}]":
-                    return (
-                        f"{config_file}:{line_idx}:error:{msg} "
-                        f"'{target_header}'"
-                    )
-        ## The header could not be located. Report the problem anyway: an
-        ## empty string here would reach the operator as a blank error,
-        ## refusing the config without saying why.
-        return f"{config_file}:error:{msg} '{target_header}'"
+                    line_idx_str = str(line_idx)
+                    break
+        return f"{config_file}:{line_idx_str}:error:{msg} '{target_header}'"
 
     @staticmethod
     def normalize_user_id(user_name: str) -> str | None:

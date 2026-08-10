@@ -29,6 +29,7 @@ import shutil
 import socket
 import time
 import signal
+import select
 from threading import Thread
 import re
 from pathlib import Path
@@ -177,6 +178,20 @@ def init_fake_server_dirs() -> None:
     PlTestGlobal.privleap_state_comm_dir.chmod(0o755)
 
 
+def wait_and_get_session(listen_socket: PrivleapSocket) -> PrivleapSession:
+    """
+    Waits for a session to be get-able, then gets it.
+    """
+
+    with select.epoll() as epoll_obj:
+        assert listen_socket.backend_socket is not None
+        epoll_obj.register(
+            listen_socket.backend_socket.fileno(), select.EPOLLIN
+        )
+        epoll_obj.poll()
+        return listen_socket.get_session()
+
+
 def leapctl_assert_command(
     command_data: list[str],
     exit_code: int,
@@ -263,7 +278,7 @@ def leapctl_server_error_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leapctl_proc:
-        control_session = control_socket.get_session()
+        control_session = wait_and_get_session(control_socket)
         control_session.get_msg()
         control_session.send_msg(PrivleapControlServerControlErrorMsg())
         control_session.close_session()
@@ -295,7 +310,7 @@ def leapctl_server_cutoff_test(bogus: str) -> bool:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         ) as leapctl_proc:
-            control_session = control_socket.get_session()
+            control_session = wait_and_get_session(control_socket)
             control_session.close_session()
             assert control_socket.backend_socket is not None
             leapctl_result: Tuple[bytes, bytes] = leapctl_proc.communicate()
@@ -650,7 +665,7 @@ def leaprun_server_invalid_msg_seq_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         comm_session.get_msg()
         # noinspection PyUnresolvedReferences
         # noinspection PyProtectedMember
@@ -687,7 +702,7 @@ def leaprun_server_late_cutoff_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         comm_session.get_msg()
         leaprun_helper_teardown_fake_server(
             comm_session, comm_socket, "privleaptestone"
@@ -714,7 +729,7 @@ def leaprun_server_early_cutoff_exec_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         leaprun_helper_teardown_fake_server(
             comm_session, comm_socket, "privleaptestone"
         )
@@ -750,7 +765,7 @@ def leaprun_server_early_cutoff_query_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         leaprun_helper_teardown_fake_server(
             comm_session, comm_socket, "privleaptestone"
         )
@@ -778,7 +793,7 @@ def leaprun_terminate_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientSignalMsg):
             logging.error("Did not get a 'SIGNAL' message from leaprun!")
@@ -826,7 +841,7 @@ def leaprun_midaction_cutoff_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientSignalMsg):
             logging.error("Did not get a 'SIGNAL' message from leaprun!")
@@ -876,7 +891,7 @@ def leaprun_multi_unauthorized_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientAccessCheckMsg):
             logging.error("Did not get an 'ACCESS_CHECK' message from leaprun!")
@@ -925,7 +940,7 @@ def leaprun_unauth_after_trigger_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientSignalMsg):
             logging.error("Did not get a 'SIGNAL' message from leaprun!")
@@ -969,7 +984,7 @@ def leaprun_auth_during_exec_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientSignalMsg):
             logging.error("Did not get a 'SIGNAL' message from leaprun!")
@@ -1020,7 +1035,7 @@ def leaprun_multi_authorized_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientAccessCheckMsg):
             logging.error("Did not get an 'ACCESS_CHECK' message from leaprun!")
@@ -1069,7 +1084,7 @@ def leaprun_access_check_end_during_exec_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientSignalMsg):
             logging.error("Did not get a 'SIGNAL' message from leaprun!")
@@ -1120,7 +1135,7 @@ def leaprun_access_check_end_before_results_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientAccessCheckMsg):
             logging.error("Did not get an 'ACCESS_CHECK' message from leaprun!")
@@ -1174,7 +1189,7 @@ def leaprun_trigger_error_during_check_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientAccessCheckMsg):
             logging.error("Did not get an 'ACCESS_CHECK' message from leaprun!")
@@ -1219,7 +1234,7 @@ def leaprun_multi_trigger_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientSignalMsg):
             logging.error("Did not get a 'SIGNAL' message from leaprun!")
@@ -1268,7 +1283,7 @@ def leaprun_trigger_during_check_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientAccessCheckMsg):
             logging.error("Did not get an 'ACCESS_CHECK' message from leaprun!")
@@ -1312,7 +1327,7 @@ def leaprun_result_stdout_before_trigger_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientSignalMsg):
             logging.error("Did not get a 'SIGNAL' message from leaprun!")
@@ -1355,7 +1370,7 @@ def leaprun_result_stderr_before_trigger_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientSignalMsg):
             logging.error("Did not get a 'SIGNAL' message from leaprun!")
@@ -1398,7 +1413,7 @@ def leaprun_result_exitcode_before_trigger_test(bogus: str) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     ) as leaprun_proc:
-        comm_session: PrivleapSession = comm_socket.get_session()
+        comm_session: PrivleapSession = wait_and_get_session(comm_socket)
         return_msg: PrivleapMsg = comm_session.get_msg()
         if not isinstance(return_msg, PrivleapCommClientSignalMsg):
             logging.error("Did not get a 'SIGNAL' message from leaprun!")

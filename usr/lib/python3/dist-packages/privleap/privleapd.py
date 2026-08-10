@@ -11,8 +11,8 @@
 
 """privleapd.py - privleap background process."""
 
+import copy
 import sys
-import errno
 import shutil
 import select
 from threading import Thread, Lock
@@ -22,7 +22,9 @@ import pwd
 import grp
 import subprocess
 import logging
+import signal
 import time
+import traceback
 from enum import Enum
 from pathlib import Path
 from typing import cast, SupportsIndex, NoReturn, Any, IO
@@ -77,8 +79,6 @@ class PrivleapdSocketInfo:
     listen_socket: PrivleapSocket
     term_notify_read_fd: int
     term_notify_write_fd: int
-    # Sticky broadcast: the byte is never read back, so every comm thread
-    # epolling it keeps seeing it. Closing these early would blind siblings.
     term_notify_read_pipe: IO[bytes] | None
     term_notify_write_pipe: IO[bytes] | None
     should_terminate: bool = False
@@ -116,22 +116,8 @@ class PrivleapdGlobal:
     allowed_group_list: list[str] = []
     expected_disallowed_user_list: list[str] = []
 
-    # Read by the watchdog thread too; set up before any thread starts.
+    # Readable and writable by main thread only
     sdnotify_object: sdnotify.SystemdNotifier = sdnotify.SystemdNotifier()
-
-    # Written by the main thread each iteration, read by the watchdog thread:
-    # a steady ping cadence, while a stale heartbeat still signals a wedge.
-    main_loop_heartbeat: float = 0.0
-    # Derived from WATCHDOG_USEC. A zero interval means no watchdog.
-    watchdog_ping_interval: float = 0.0
-    watchdog_heartbeat_timeout: float = 0.0
-    # Longest the main loop may block in epoll, so its heartbeat stays fresh.
-    main_loop_poll_timeout: float = 5.0
-    # How long to keep trying to hand systemd a notification it is waiting on.
-    sd_notify_retry_seconds: float = 5.0
-    # Pause after an accept that failed for lack of resources.
-    accept_backoff_seconds: float = 0.5
-    accept_backoff_until: float = 0.0
 
     # Thread IPC mechanisms
     # control-to-main pipe read end, for main thread
@@ -167,163 +153,6 @@ class PrivleapdCommDestroyResult(Enum):
     SUCCESS = 0
     NO_USER = 1
     PERSISTENT_USER = 2
-
-
-def sd_notify(state: str, must_arrive: bool = False) -> None:
-    """
-    Sends a notification to systemd. sdnotify's own notify() swallows every
-    error, which would hide a notifier that never connected, so the send is
-    done here instead.
-
-    Set must_arrive for a notification systemd is waiting on rather than one
-    it merely observes. A dropped watchdog ping costs nothing, since the next
-    is due well inside the deadline; a dropped READY=1 fails the unit's start
-    outright, because Type=notify waits for exactly that message.
-
-    May be called by the main thread or the watchdog thread.
-    """
-
-    notify_socket: Any = PrivleapdGlobal.sdnotify_object.socket
-    if notify_socket is None:
-        return
-
-    deadline: float = time.monotonic() + (
-        PrivleapdGlobal.sd_notify_retry_seconds if must_arrive else 0
-    )
-    while True:
-        try:
-            notify_socket.send(state.encode("utf-8"))
-            return
-        except BlockingIOError:
-            # Waiting is only acceptable for a message systemd waits for;
-            # for a ping it would stall the thread proving we are alive.
-            if time.monotonic() >= deadline:
-                if must_arrive:
-                    # systemd is waiting for this one and will time the unit
-                    # out without it. Logging at debug would leave that
-                    # failure with no explanation anywhere.
-                    logging.error(
-                        "Could not hand systemd '%s'; it is waiting for it "
-                        "and will time this unit out",
-                        state,
-                    )
-                else:
-                    logging.debug(
-                        "systemd notification socket is full, dropped '%s'",
-                        state,
-                    )
-                return
-            time.sleep(0.05)
-        except Exception as e:
-            logging.error("Could not send '%s' to systemd", state, exc_info=e)
-            return
-
-
-def setup_sd_notify() -> None:
-    """
-    Prepares the systemd notification socket, and works out the watchdog ping
-    cadence from the environment systemd provides.
-
-    May only be called by the main thread.
-    """
-
-    notify_socket: Any = PrivleapdGlobal.sdnotify_object.socket
-    if notify_socket is None:
-        if os.environ.get("NOTIFY_SOCKET") is not None:
-            logging.error(
-                "NOTIFY_SOCKET is set but the systemd notification socket "
-                "could not be opened, systemd will not be notified!"
-            )
-        return
-
-    # A blocking send would park the pinging thread exactly when systemd is
-    # behind, which is when the watchdog must keep working.
-    notify_socket.setblocking(False)
-
-    watchdog_usec_str: str | None = os.environ.get("WATCHDOG_USEC")
-    if watchdog_usec_str is None:
-        return
-    try:
-        watchdog_usec: int = int(watchdog_usec_str)
-    except ValueError:
-        logging.error(
-            "Could not parse WATCHDOG_USEC value '%s'", watchdog_usec_str
-        )
-        return
-    if watchdog_usec <= 0:
-        return
-
-    watchdog_sec: float = watchdog_usec / 1000000
-    # A quarter of the deadline leaves room for three missed pings.
-    PrivleapdGlobal.watchdog_ping_interval = watchdog_sec / 4
-    PrivleapdGlobal.watchdog_heartbeat_timeout = watchdog_sec / 2
-    PrivleapdGlobal.main_loop_poll_timeout = min(
-        PrivleapdGlobal.main_loop_poll_timeout,
-        PrivleapdGlobal.watchdog_ping_interval,
-    )
-
-
-def watchdog_loop() -> NoReturn:
-    """
-    Watchdog ping thread. Tells systemd this process is still alive, as long
-    as the main thread is still working through its loop. If the main thread
-    wedges, pings stop and systemd restarts privleapd, which is the whole
-    point of the watchdog.
-
-    Must be spawned as the watchdog thread by the main thread.
-    """
-
-    stall_reported: bool = False
-
-    while True:
-        time.sleep(PrivleapdGlobal.watchdog_ping_interval)
-        heartbeat_age: float = (
-            time.monotonic() - PrivleapdGlobal.main_loop_heartbeat
-        )
-        if heartbeat_age > PrivleapdGlobal.watchdog_heartbeat_timeout:
-            if not stall_reported:
-                logging.critical(
-                    "Main loop has not run for %.1f seconds, no longer "
-                    "telling systemd that privleapd is alive!",
-                    heartbeat_age,
-                )
-                stall_reported = True
-            continue
-        if stall_reported:
-            logging.warning("Main loop is running again after a stall")
-            stall_reported = False
-        sd_notify("WATCHDOG=1")
-
-
-def report_accept_failure(error: Exception, message: str, *args: Any) -> None:
-    """
-    Logs a failed accept, and schedules a pause when it failed for lack of
-    resources.
-
-    A connection that could not be accepted stays in the kernel's backlog, so
-    the listening socket stays readable and the main loop is handed the same
-    event again immediately. Without a pause it spins at full speed: busy
-    enough that its heartbeat keeps advancing and the watchdog keeps reporting
-    a healthy daemon, while in fact it is answering nobody. Running out of
-    file descriptors is something any client can cause, so this has to be
-    survivable rather than merely unlikely.
-
-    May only be called by the main thread.
-    """
-
-    logging.error(message, *args, exc_info=error)
-    if isinstance(error, OSError) and error.errno in (
-        errno.EMFILE,
-        errno.ENFILE,
-        errno.ENOBUFS,
-        errno.ENOMEM,
-    ):
-        # A deadline, not a sleep: this runs under socket_list_lock, so
-        # waiting here would stall leapctl too. main_loop honours it after
-        # releasing the lock.
-        PrivleapdGlobal.accept_backoff_until = (
-            time.monotonic() + PrivleapdGlobal.accept_backoff_seconds
-        )
 
 
 def send_msg_safe(session: PrivleapSession, msg: PrivleapMsg) -> bool:
@@ -461,28 +290,6 @@ def socket_list_add(new_sock: PrivleapSocket) -> None:
     )
 
 
-def notify_pipe_write(notify_pipe: IO[bytes]) -> None:
-    """
-    Writes a single wakeup byte to a notification pipe. The byte is a sticky
-    flag rather than a message, so a pipe that is already full has already
-    delivered the notification and nothing more needs writing. The write never
-    blocks, so it is safe to do while holding a lock.
-
-    The pipes used here are raw, and a raw non-blocking write reports a full
-    pipe by returning None rather than by raising. A buffered pipe would raise
-    instead, so that is caught too. Either way the byte is already pending, so
-    dropping this one changes nothing.
-
-    May be called by any thread.
-    """
-
-    try:
-        notify_pipe.write(b"\x00")
-    except BlockingIOError:
-        # Nothing to do: a full pipe has already delivered the notification.
-        pass
-
-
 def socket_list_add_sync(new_sock: PrivleapSocket) -> None:
     """
     Sets up and appends a socket to PrivleapdGlobal.socket_list, synchronizing
@@ -493,7 +300,8 @@ def socket_list_add_sync(new_sock: PrivleapSocket) -> None:
 
     assert PrivleapdGlobal.ctm_write_pipe is not None
     with PrivleapdGlobal.socket_list_lock:
-        notify_pipe_write(PrivleapdGlobal.ctm_write_pipe)
+        while PrivleapdGlobal.ctm_write_pipe.write(b"\x00") == 0:
+            pass
         socket_list_add(new_sock)
 
 
@@ -574,7 +382,8 @@ def socket_list_stop_sync(sock_idx: int) -> None:
 
     assert PrivleapdGlobal.ctm_write_pipe is not None
     with PrivleapdGlobal.socket_list_lock:
-        notify_pipe_write(PrivleapdGlobal.ctm_write_pipe)
+        while PrivleapdGlobal.ctm_write_pipe.write(b"\x00") == 0:
+            pass
         target_socket_info: PrivleapdSocketInfo = PrivleapdGlobal.socket_list[
             sock_idx
         ]
@@ -582,7 +391,15 @@ def socket_list_stop_sync(sock_idx: int) -> None:
         assert target_socket_info.term_notify_read_pipe is not None
         target_socket_info.should_terminate = True
         target_socket_info.listen_socket.close()
-        notify_pipe_write(target_socket_info.term_notify_write_pipe)
+        try:
+            while target_socket_info.term_notify_write_pipe.write(
+                b"\x00"
+            ) == 0:
+                pass
+        except BrokenPipeError:
+            # Thread is already in the process of shutting down, we can ignore
+            # this
+            pass
         PrivleapdGlobal.socket_list.pop(cast(SupportsIndex, sock_idx))
 
 
@@ -722,15 +539,11 @@ def handle_control_socket_conn(control_socket: PrivleapSocket) -> None:
     """
 
     try:
-        control_session: PrivleapSession = control_socket.get_session(
-            bounded=True
-        )
-    except TimeoutError:
-        # The ready event has gone stale; nothing is waiting to be accepted.
-        logging.debug("No control connection was pending after all")
-        return
+        control_session: PrivleapSession = control_socket.get_session()
     except Exception as e:
-        report_accept_failure(e, "Could not start control session with client!")
+        logging.error(
+            "Could not start control session with client!", exc_info=e
+        )
         return
 
     PrivleapdGlobal.control_request_queue.put(
@@ -761,15 +574,12 @@ def handle_control_session(control_session: PrivleapSession) -> None:
         elif isinstance(control_msg, PrivleapControlClientReloadMsg):
             handle_control_reload_msg(control_session)
         else:
-            # Not sys.exit(): raised from the control thread it would only
-            # unwind that thread, and SystemExit escapes the loop's guard and
-            # is discarded by threading's excepthook -- killing the control
-            # socket with no log line at all, which is the exact failure that
-            # guard exists to prevent.
             logging.critical(
                 "privleapd mis-parsed a control command from the client!"
             )
-            return
+            # Need to explicitly kill privleapd and exit the thread
+            os.kill(os.getpid(), signal.SIGINT)
+            sys.exit(1)
     finally:
         control_session.close_session()
 
@@ -945,24 +755,18 @@ def authorize_user(
         # We need to get the list of groups this user is a member of to
         # determine whether they are authorized or not.
         user_gid: int = pwd.getpwnam(user_name).pw_gid
-        # getgrouplist returns the primary GID whether or not a group entry
-        # exists for it, so an account whose primary group is unresolvable
-        # (a stale entry, or an LDAP lookup that failed) would otherwise
-        # raise here and lock that account out of every group-authorized
-        # action. user_in_allowed_group() already tolerates this.
-        group_list: list[str] = []
         for gid in os.getgrouplist(user_name, user_gid):
             try:
-                group_list.append(grp.getgrgid(gid).gr_name)
-            except KeyError:
+                group_name: str = grp.getgrgid(gid).gr_name
+            except Exception as e:
                 logging.warning(
-                    "Account '%s' belongs to group id %d, which no longer "
-                    "exists; skipping it",
-                    user_name,
+                    "Error looking up group %d of account '%s', skipping.",
                     gid,
+                    user_name,
+                    exc_info=e,
                 )
-        for group in group_list:
-            if group in action.auth_groups:
+                continue
+            if group_name in action.auth_groups:
                 return PrivleapdAuthStatus.AUTHORIZED
 
     # Action had restrictions that could not be met, deny access
@@ -1018,6 +822,8 @@ def check_early_action_terminate(
     assert comm_session.backend_socket is not None
 
     if listen_socket_info.should_terminate:
+        listen_socket_info.term_notify_read_pipe.close()
+        listen_socket_info.term_notify_write_pipe.close()
         return True
 
     if comm_session.backend_socket.fileno() in ready_fds:
@@ -1031,23 +837,7 @@ def check_early_action_terminate(
     return False
 
 
-def mark_stream_done(
-    epoll_obj: select.epoll, stream: IO[bytes], stream_done: bool
-) -> bool:
-    """
-    Records that one of an action's output streams has hit end-of-file. A
-    stream at end-of-file stays permanently ready, so leaving it registered
-    would turn the caller's epoll into a busy loop until the other stream
-    closes too.
-
-    May be called only by comm threads.
-    """
-
-    if not stream_done:
-        epoll_obj.unregister(stream.fileno())
-    return True
-
-
+# pylint: disable=too-many-branches
 def send_action_results(
     comm_session: PrivleapSession,
     action_name: str,
@@ -1094,13 +884,17 @@ def send_action_results(
                 ):
                     return
 
-                stdout_buf: bytes | None = action_process.stdout.read(1024)
-                stderr_buf: bytes | None = action_process.stderr.read(1024)
+                stdout_buf: bytes | None = None
+                stderr_buf: bytes | None = None
+
+                if not stdout_done:
+                    stdout_buf = action_process.stdout.read(1024)
+                if not stderr_done:
+                    stderr_buf = action_process.stderr.read(1024)
 
                 if stdout_buf == b"":
-                    stdout_done = mark_stream_done(
-                        epoll_obj, action_process.stdout, stdout_done
-                    )
+                    stdout_done = True
+                    epoll_obj.unregister(action_process.stdout.fileno())
                 elif stdout_buf is not None:
                     if not send_msg_safe(
                         comm_session,
@@ -1109,9 +903,8 @@ def send_action_results(
                         return
 
                 if stderr_buf == b"":
-                    stderr_done = mark_stream_done(
-                        epoll_obj, action_process.stderr, stderr_done
-                    )
+                    stderr_done = True
+                    epoll_obj.unregister(action_process.stderr.fileno())
                 elif stderr_buf is not None:
                     if not send_msg_safe(
                         comm_session,
@@ -1380,20 +1173,13 @@ def handle_comm_socket_conn(comm_socket_info: PrivleapdSocketInfo) -> None:
 
     try:
         comm_session: PrivleapSession = (
-            comm_socket_info.listen_socket.get_session(bounded=True)
+            comm_socket_info.listen_socket.get_session()
         )
-    except TimeoutError:
-        # The ready event has gone stale; nothing is waiting to be accepted.
-        logging.debug(
-            "No comm connection was pending after all for account '%s'",
-            comm_socket_info.listen_socket.user_name,
-        )
-        return
     except Exception as e:
-        report_accept_failure(
-            e,
+        logging.error(
             "Could not start comm session with client run by account '%s'!",
             comm_socket_info.listen_socket.user_name,
+            exc_info=e,
         )
         return
 
@@ -1860,8 +1646,7 @@ def prep_sock_notify_pipe() -> None:
     """
 
     PrivleapdGlobal.ctm_read_fd, PrivleapdGlobal.ctm_write_fd = os.pipe()
-    # Written under socket_list_lock, which the main thread needs to drain it.
-    os.set_blocking(PrivleapdGlobal.ctm_write_fd, False)
+    os.set_blocking(PrivleapdGlobal.ctm_read_fd, False)
     PrivleapdGlobal.ctm_read_pipe = os.fdopen(
         PrivleapdGlobal.ctm_read_fd, "rb", buffering=0
     )
@@ -1886,8 +1671,6 @@ def control_handler_loop() -> NoReturn:
         )
         assert "type" in control_request
 
-        # Nothing restarts this thread. Losing it leaves privleapd looking
-        # healthy while every control request queues unanswered.
         try:
             match control_request["type"]:
                 case "control_session":
@@ -1900,75 +1683,11 @@ def control_handler_loop() -> NoReturn:
                     assert "user_name" in control_request
                     assert isinstance(control_request["user_name"], str)
                     _, _ = destroy_comm_socket(control_request["user_name"])
-        except Exception as e:
-            logging.error(
-                "Failed to handle control request of type '%s'!",
-                control_request["type"],
-                exc_info=e,
-            )
-
-
-def refresh_epoll_registrations(
-    epoll_obj: select.epoll,
-    registered_socket_map: dict[PrivleapSocket, int],
-) -> tuple[dict[int, PrivleapdSocketInfo], bool]:
-    """
-    Brings the epoll registration set in line with the current socket list.
-    Returns a fresh file-descriptor-to-socket map for dispatching events, and
-    whether a socket was left unregistered and so needs another attempt.
-
-    Registrations are tracked by socket object rather than by file descriptor
-    number, because the kernel hands the descriptor number of a just-closed
-    socket straight back to the next socket that is opened. Keying on the
-    number makes a destroy immediately followed by a create look like no
-    change at all, which would leave the newly created socket permanently
-    unwatched.
-
-    May only be called by the main thread.
-    """
-
-    fd_to_socket_info_map: dict[int, PrivleapdSocketInfo] = {}
-    retry_needed: bool = False
-
-    with PrivleapdGlobal.socket_list_lock:
-        current_socket_map: dict[PrivleapSocket, PrivleapdSocketInfo] = {
-            sock_info.listen_socket: sock_info
-            for sock_info in PrivleapdGlobal.socket_list
-        }
-
-        # Unregister first: a reused descriptor number must be free before
-        # the new socket claims it.
-        for gone_socket in set(registered_socket_map) - set(current_socket_map):
-            try:
-                epoll_obj.unregister(registered_socket_map[gone_socket])
-            except OSError:
-                # Closing a socket already drops it from the epoll set.
-                pass
-            del registered_socket_map[gone_socket]
-
-        for current_socket, sock_info in current_socket_map.items():
-            if current_socket.backend_socket is None:
-                continue
-            if current_socket not in registered_socket_map:
-                socket_fileno: int = current_socket.backend_socket.fileno()
-                try:
-                    epoll_obj.register(socket_fileno, select.EPOLLIN)
-                except OSError as e:
-                    # Reaching the main loop would end the daemon. Ask for
-                    # another refresh; nothing else would retry this socket.
-                    logging.error(
-                        "Could not watch the socket for account '%s'!",
-                        current_socket.user_name,
-                        exc_info=e,
-                    )
-                    retry_needed = True
-                    continue
-                registered_socket_map[current_socket] = socket_fileno
-            fd_to_socket_info_map[registered_socket_map[current_socket]] = (
-                sock_info
-            )
-
-    return fd_to_socket_info_map, retry_needed
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            # Need to explicitly kill privleapd and exit the thread
+            os.kill(os.getpid(), signal.SIGINT)
+            sys.exit(1)
 
 
 def main_loop() -> NoReturn:
@@ -1981,82 +1700,66 @@ def main_loop() -> NoReturn:
     """
 
     assert PrivleapdGlobal.ctm_read_pipe is not None
-    registered_socket_map: dict[PrivleapSocket, int] = {}
-    fd_to_socket_info_map: dict[int, PrivleapdSocketInfo] = {}
+    epoll_obj_list: list[PrivleapdSocketInfo] = []
     epoll_obj: select.epoll = select.epoll()
     epoll_obj.register(PrivleapdGlobal.ctm_read_fd, select.EPOLLIN)
     socket_list_changed: bool = True
 
     while True:
         if socket_list_changed:
-            # A failed registration leaves the flag set, so the next
-            # iteration retries it.
-            fd_to_socket_info_map, socket_list_changed = (
-                refresh_epoll_registrations(epoll_obj, registered_socket_map)
-            )
+            with PrivleapdGlobal.socket_list_lock:
+                for current_socket in PrivleapdGlobal.socket_list:
+                    if current_socket in epoll_obj_list:
+                        continue
+                    assert (
+                        current_socket.listen_socket.backend_socket is not None
+                    )
+                    epoll_obj.register(
+                        current_socket.listen_socket.backend_socket.fileno(),
+                        select.EPOLLIN,
+                    )
+                epoll_obj_list = copy.copy(PrivleapdGlobal.socket_list)
+            socket_list_changed = False
 
-        PrivleapdGlobal.main_loop_heartbeat = time.monotonic()
-        epoll_event_fd_list: list[int] = [
-            x[0] for x in epoll_obj.poll(PrivleapdGlobal.main_loop_poll_timeout)
-        ]
-        PrivleapdGlobal.main_loop_heartbeat = time.monotonic()
+        epoll_event_fd_list: list[int] = [x[0] for x in epoll_obj.poll(5)]
+        PrivleapdGlobal.sdnotify_object.notify("WATCHDOG=1")
 
         if PrivleapdGlobal.ctm_read_fd in epoll_event_fd_list:
-            # Refreshing takes socket_list_lock, which is what makes this
-            # thread wait for the control thread's mutation to finish.
-            PrivleapdGlobal.ctm_read_pipe.read(1)
+            # Connection change, i.e. adding or removing a socket. The
+            # main thread needs to synchronize with the control thread
+            # when this is done to prevent losing track of or not
+            # noticing a new socket.
+            PrivleapdGlobal.ctm_read_pipe.read()
+            with PrivleapdGlobal.socket_list_lock:
+                pass
             socket_list_changed = True
             continue
 
         # Note that if we get this far, PrivleapdGlobal.ctm_read_fd is NOT in
         # epoll_event_fd_list, so we don't need to check for its presence and
-        # can assume all fds correspond to sockets.
+        # can assume all fds correspond to active sockets.
         with PrivleapdGlobal.socket_list_lock:
             for ready_socket_fileno in epoll_event_fd_list:
-                ready_sock_info_obj: PrivleapdSocketInfo | None = (
-                    fd_to_socket_info_map.get(ready_socket_fileno)
-                )
-                # An ordinary race, not a bookkeeping failure.
-                # should_terminate is set under the lock before removal, so an
-                # entry without it is still current.
-                if (
-                    ready_sock_info_obj is None
-                    or ready_sock_info_obj.should_terminate
-                ):
-                    logging.debug(
-                        "Ignoring a stale ready event for descriptor %d",
-                        ready_socket_fileno,
-                    )
-                    socket_list_changed = True
-                    continue
-                # One connection must never be able to end the main thread.
-                try:
-                    if ready_sock_info_obj.listen_socket.socket_type == (
-                        PrivleapSocketType.CONTROL
+                ready_sock_info_obj: PrivleapdSocketInfo | None = None
+                for sock_info_obj in PrivleapdGlobal.socket_list:
+                    sock_obj = sock_info_obj.listen_socket
+                    assert sock_obj.backend_socket is not None
+                    if sock_obj.backend_socket.fileno() == (
+                        ready_socket_fileno
                     ):
-                        handle_control_socket_conn(
-                            ready_sock_info_obj.listen_socket
-                        )
-                    else:
-                        handle_comm_socket_conn(ready_sock_info_obj)
-                except Exception as e:
-                    logging.error(
-                        "Failed to handle a connection on descriptor %d!",
-                        ready_socket_fileno,
-                        exc_info=e,
+                        ready_sock_info_obj = sock_info_obj
+                        break
+                if ready_sock_info_obj is None:
+                    logging.critical("privleapd lost track of a socket!")
+                    sys.exit(1)
+                if ready_sock_info_obj.listen_socket.socket_type == (
+                    PrivleapSocketType.CONTROL
+                ):
+                    handle_control_socket_conn(
+                        ready_sock_info_obj.listen_socket
                     )
-                    socket_list_changed = True
-                PrivleapdGlobal.main_loop_heartbeat = time.monotonic()
-
-        # Outside the lock: an unaccepted connection stays in the backlog, so
-        # without a pause this spins. Waiting under the lock would stall
-        # every control request instead.
-        backoff_remaining: float = (
-            PrivleapdGlobal.accept_backoff_until - time.monotonic()
-        )
-        if backoff_remaining > 0:
-            time.sleep(backoff_remaining)
-            PrivleapdGlobal.main_loop_heartbeat = time.monotonic()
+                else:
+                    handle_comm_socket_conn(ready_sock_info_obj)
 
 
 def print_usage() -> None:
@@ -2121,17 +1824,12 @@ def main() -> NoReturn:
     open_control_socket()
     open_persistent_comm_sockets(in_control_thread=False)
     prep_sock_notify_pipe()
-    setup_sd_notify()
     control_handler_thread: Thread = Thread(
         target=control_handler_loop, daemon=True
     )
     control_handler_thread.start()
-    PrivleapdGlobal.main_loop_heartbeat = time.monotonic()
-    if PrivleapdGlobal.watchdog_ping_interval > 0:
-        watchdog_thread: Thread = Thread(target=watchdog_loop, daemon=True)
-        watchdog_thread.start()
-    sd_notify("READY=1", must_arrive=True)
-    sd_notify("STATUS=Fully started")
+    PrivleapdGlobal.sdnotify_object.notify("READY=1")
+    PrivleapdGlobal.sdnotify_object.notify("STATUS=Fully started")
     if PrivleapdGlobal.test_mode:
         Path("/tmp/privleapd-ready-for-test").touch()
     main_loop()
