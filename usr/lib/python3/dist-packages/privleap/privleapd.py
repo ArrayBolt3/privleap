@@ -593,10 +593,12 @@ def handle_control_socket_conn(control_socket: PrivleapSocket) -> bool:
     except Exception as e:
         accept_error: PrivleapdAcceptError = classify_accept_error(e)
         if accept_error == PrivleapdAcceptError.RESOURCE:
+            # No exc_info: avoids flooding the log with a stack trace on every
+            # ready socket per backoff cycle under sustained EMFILE.
             logging.error(
-                "Ran out of resources accepting a control connection; "
+                "Ran out of resources accepting a control connection (%s); "
                 "backing off.",
-                exc_info=e,
+                e,
             )
             return False
         if accept_error == PrivleapdAcceptError.SPURIOUS:
@@ -1244,11 +1246,13 @@ def handle_comm_socket_conn(comm_socket_info: PrivleapdSocketInfo) -> bool:
     except Exception as e:
         accept_error: PrivleapdAcceptError = classify_accept_error(e)
         if accept_error == PrivleapdAcceptError.RESOURCE:
+            # No exc_info: this fires once per ready socket per backoff cycle
+            # under sustained EMFILE, and a stack trace each time floods the log.
             logging.error(
                 "Ran out of resources accepting a comm connection from "
-                "account '%s'; backing off.",
+                "account '%s' (%s); backing off.",
                 comm_socket_info.listen_socket.user_name,
-                exc_info=e,
+                e,
             )
             return False
         if accept_error == PrivleapdAcceptError.SPURIOUS:
@@ -1268,7 +1272,21 @@ def handle_comm_socket_conn(comm_socket_info: PrivleapdSocketInfo) -> bool:
         args=[comm_session, comm_socket_info],
         daemon=True,
     )
-    comm_thread.start()
+    try:
+        comm_thread.start()
+    except RuntimeError as e:
+        # Thread exhaustion (RLIMIT_NPROC / kernel thread cap) is a resource
+        # condition, not a bug: closing the accepted session and backing off
+        # keeps the daemon alive instead of letting the RuntimeError escape
+        # main_loop and crash the root process.
+        logging.error(
+            "Could not start a handler thread for account '%s' (%s); "
+            "backing off.",
+            comm_socket_info.listen_socket.user_name,
+            e,
+        )
+        comm_session.close_session()
+        return False
     return True
 
 
@@ -1807,13 +1825,18 @@ def dispatch_ready_sockets(epoll_event_fd_list: list[int]) -> bool:
             if ready_sock_info_obj.listen_socket.socket_type == (
                 PrivleapSocketType.CONTROL
             ):
-                if not handle_control_socket_conn(
+                healthy = handle_control_socket_conn(
                     ready_sock_info_obj.listen_socket
-                ):
-                    iteration_healthy = False
+                )
             else:
-                if not handle_comm_socket_conn(ready_sock_info_obj):
-                    iteration_healthy = False
+                healthy = handle_comm_socket_conn(ready_sock_info_obj)
+            if not healthy:
+                # Transient resource exhaustion (e.g. EMFILE) fails every
+                # accept in this batch identically; stop hammering the rest and
+                # let the caller back off. The remaining ready fds are
+                # level-triggered, so they are re-offered next iteration.
+                iteration_healthy = False
+                break
     return iteration_healthy
 
 
@@ -1855,10 +1878,12 @@ def main_loop() -> NoReturn:
             # main thread needs to synchronize with the control thread
             # when this is done to prevent losing track of or not
             # noticing a new socket.
-            PrivleapdGlobal.sdnotify_object.notify("WATCHDOG=1")
             PrivleapdGlobal.ctm_read_pipe.read()
             with PrivleapdGlobal.socket_list_lock:
                 pass
+            # Notify only after the sync completes, so a stalled read or lock
+            # acquisition cannot report the daemon as healthy.
+            PrivleapdGlobal.sdnotify_object.notify("WATCHDOG=1")
             socket_list_changed = True
             continue
 

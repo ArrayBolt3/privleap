@@ -73,6 +73,30 @@ class _FakeBackendSocket:
         return self._fd
 
 
+class _FakeSession:
+    """A minimal accepted-session double that records being closed."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close_session(self) -> None:
+        self.closed = True
+
+
+class _StartRaisesThread:
+    """
+    Thread stand-in whose start() raises RuntimeError, emulating thread
+    exhaustion (RLIMIT_NPROC / kernel thread cap). Constructed the same way
+    privleapd constructs its comm threads.
+    """
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    def start(self) -> None:
+        raise RuntimeError("can't start new thread")
+
+
 class _FakeListenSocket:
     def __init__(
         self,
@@ -80,17 +104,21 @@ class _FakeListenSocket:
         socket_type: PrivleapSocketType,
         raise_exc: BaseException | None = None,
         user_name: str = "testuser",
+        session: object | None = None,
     ) -> None:
         self.backend_socket = _FakeBackendSocket(fd)
         self.socket_type = socket_type
         self.user_name = user_name
         self._raise_exc = raise_exc
+        self._session = session
         self.session_started = False
 
     def get_session(self) -> object:
         if self._raise_exc is not None:
             raise self._raise_exc
         self.session_started = True
+        if self._session is not None:
+            return self._session
         return object()
 
 
@@ -114,10 +142,15 @@ class _FakeEpoll:
 
 
 def _make_comm_sock_info(
-    fd: int, raise_exc: BaseException | None = None
+    fd: int,
+    raise_exc: BaseException | None = None,
+    session: object | None = None,
 ) -> PrivleapdSocketInfo:
     listen_socket = _FakeListenSocket(
-        fd, PrivleapSocketType.COMMUNICATION, raise_exc=raise_exc
+        fd,
+        PrivleapSocketType.COMMUNICATION,
+        raise_exc=raise_exc,
+        session=session,
     )
     return PrivleapdSocketInfo(
         listen_socket=listen_socket,  # type: ignore[arg-type]
@@ -291,6 +324,196 @@ class DaemonDefectTests(unittest.TestCase):
             "WATCHDOG=1",
             self.notifier.messages,
             "a healthy idle iteration must still ping the watchdog",
+        )
+
+    # ----- Refinement 4: thread exhaustion must not crash the daemon -----
+
+    def test_handle_comm_conn_thread_exhaustion_returns_false_closes_session(
+        self,
+    ) -> None:
+        """
+        accept() succeeds but Thread.start() raises RuntimeError (thread
+        exhaustion). handle_comm_socket_conn must catch it, close the accepted
+        session, and return False (back off) -- NOT let the RuntimeError escape.
+        The pre-refinement code did not wrap start(), so the RuntimeError
+        propagated out (this test would error on it).
+        """
+        session = _FakeSession()
+        sock_info = _make_comm_sock_info(42, session=session)
+        with mock.patch.object(privleapd, "Thread", _StartRaisesThread):
+            result = handle_comm_socket_conn(sock_info)
+        self.assertIs(
+            result,
+            False,
+            "thread exhaustion must return False to trigger backoff",
+        )
+        self.assertTrue(
+            session.closed,
+            "the accepted session must be closed on thread exhaustion",
+        )
+
+    def test_main_loop_survives_thread_exhaustion(self) -> None:
+        """
+        DoS proof: drives the real main_loop with a comm socket whose accept()
+        succeeds but whose handler Thread.start() raises RuntimeError. The fixed
+        code backs off (time.sleep), withholds the watchdog, closes the session,
+        and continues to the next poll (which raises _StopLoop). The
+        pre-refinement code let the RuntimeError escape main_loop and crash the
+        root daemon -- so `raised` would be a RuntimeError, failing this test.
+        """
+        exhausted_fd = 42
+        session = _FakeSession()
+        sock_info = _make_comm_sock_info(exhausted_fd, session=session)
+        PrivleapdGlobal.socket_list = [sock_info]
+
+        fake_epoll = _FakeEpoll([[(exhausted_fd, 1)]])
+        fake_select = mock.Mock()
+        fake_select.epoll = lambda: fake_epoll
+        fake_select.EPOLLIN = 1
+
+        raised: BaseException | None = None
+        with mock.patch.object(
+            privleapd, "select", fake_select
+        ), mock.patch.object(
+            privleapd, "Thread", _StartRaisesThread
+        ), mock.patch(
+            "privleap.privleapd.time.sleep"
+        ) as sleep_mock:
+            try:
+                privleapd.main_loop()
+            except BaseException as exc:  # noqa: BLE001
+                raised = exc
+
+        self.assertIsInstance(
+            raised,
+            _StopLoop,
+            "thread exhaustion must not crash the daemon "
+            f"(got {type(raised).__name__}: {raised!r})",
+        )
+        self.assertNotIn(
+            "WATCHDOG=1",
+            self.notifier.messages,
+            "watchdog must NOT be satisfied while backing off on thread "
+            "exhaustion",
+        )
+        sleep_mock.assert_called_once_with(
+            privleapd.accept_resource_backoff_seconds
+        )
+        self.assertTrue(
+            session.closed,
+            "the accepted session must be closed on thread exhaustion",
+        )
+
+    # ----- Refinement 2: a RESOURCE error must break the per-fd loop -----
+
+    def test_dispatch_breaks_on_first_resource_error(self) -> None:
+        """
+        Two ready comm fds in one batch: the first hits EMFILE, the second would
+        accept cleanly. On the fixed code the RESOURCE error breaks the per-fd
+        loop, so the second socket is never touched and False is returned. The
+        pre-refinement code set iteration_healthy=False but kept iterating,
+        hammering every ready socket -- so the second socket WOULD be accepted
+        (session_started True and a Thread constructed), which this test fails
+        on.
+        """
+        first = _make_comm_sock_info(
+            42, raise_exc=OSError(errno.EMFILE, "too many open files")
+        )
+        second = _make_comm_sock_info(43)
+        PrivleapdGlobal.socket_list = [first, second]
+
+        with mock.patch.object(privleapd, "Thread") as thread_mock:
+            result = privleapd.dispatch_ready_sockets([42, 43])
+
+        self.assertIs(
+            result,
+            False,
+            "a RESOURCE error must make the iteration report unhealthy",
+        )
+        # pylint: disable=no-member
+        self.assertFalse(
+            first.listen_socket.session_started,
+            "the EMFILE socket never establishes a session",
+        )
+        self.assertFalse(
+            second.listen_socket.session_started,
+            "after a RESOURCE error the loop must break, not accept later "
+            "ready sockets in the same batch",
+        )
+        thread_mock.assert_not_called()
+
+    # ----- Refinement 1: watchdog ping ordering on a connection change -----
+
+    def test_connection_change_pings_watchdog_after_read_and_lock(self) -> None:
+        """
+        In the connection-change path the WATCHDOG=1 ping must happen AFTER the
+        ctm pipe read and the socket_list_lock sync, so a stalled read or lock
+        acquisition cannot report the daemon as healthy. The pre-refinement code
+        pinged the watchdog FIRST, so the ping preceded the read -- which this
+        ordering assertion fails on.
+        """
+        events: list[object] = []
+
+        class _OrderPipe:
+            def read(self) -> bytes:
+                events.append("read")
+                return b""
+
+        class _OrderNotifier:
+            def notify(self, message: str) -> None:
+                events.append(("notify", message))
+
+        class _OrderLock:
+            def __enter__(self) -> "_OrderLock":
+                events.append("lock")
+                return self
+
+            def __exit__(self, *_exc: object) -> bool:
+                return False
+
+        saved_lock = PrivleapdGlobal.socket_list_lock
+        PrivleapdGlobal.ctm_read_pipe = _OrderPipe()  # type: ignore[assignment]
+        PrivleapdGlobal.sdnotify_object = (
+            _OrderNotifier()  # type: ignore[assignment]
+        )
+        PrivleapdGlobal.socket_list_lock = (
+            _OrderLock()  # type: ignore[assignment]
+        )
+        PrivleapdGlobal.socket_list = []
+        PrivleapdGlobal.ctm_read_fd = 9000
+
+        fake_epoll = _FakeEpoll([[(9000, 1)]])
+        fake_select = mock.Mock()
+        fake_select.epoll = lambda: fake_epoll
+        fake_select.EPOLLIN = 1
+
+        raised: BaseException | None = None
+        try:
+            with mock.patch.object(privleapd, "select", fake_select):
+                try:
+                    privleapd.main_loop()
+                except BaseException as exc:  # noqa: BLE001
+                    raised = exc
+        finally:
+            PrivleapdGlobal.socket_list_lock = saved_lock
+
+        self.assertIsInstance(
+            raised, _StopLoop, f"loop ended unexpectedly: {raised!r}"
+        )
+        self.assertIn("read", events)
+        self.assertIn(("notify", "WATCHDOG=1"), events)
+        read_idx = events.index("read")
+        first_lock_idx = events.index("lock")
+        notify_idx = events.index(("notify", "WATCHDOG=1"))
+        self.assertLess(
+            read_idx,
+            notify_idx,
+            "watchdog must be pinged AFTER the ctm pipe read",
+        )
+        self.assertLess(
+            first_lock_idx,
+            notify_idx,
+            "watchdog must be pinged AFTER the socket_list_lock sync",
         )
 
 
