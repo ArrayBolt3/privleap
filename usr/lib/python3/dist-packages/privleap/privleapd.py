@@ -11,6 +11,7 @@
 
 """privleapd.py - privleap background process."""
 
+import copy
 import sys
 import shutil
 import select
@@ -21,7 +22,9 @@ import pwd
 import grp
 import subprocess
 import logging
+import signal
 import time
+import traceback
 from enum import Enum
 from pathlib import Path
 from typing import cast, SupportsIndex, NoReturn, Any, IO
@@ -78,8 +81,6 @@ class PrivleapdSocketInfo:
     term_notify_write_fd: int
     term_notify_read_pipe: IO[bytes] | None
     term_notify_write_pipe: IO[bytes] | None
-    term_notify_lock: Lock = Lock()
-    term_notify_pipes_closed: bool = False
     should_terminate: bool = False
 
 
@@ -271,6 +272,7 @@ def socket_list_add(new_sock: PrivleapSocket) -> None:
     term_notify_read_fd: int
     term_notify_write_fd: int
     term_notify_read_fd, term_notify_write_fd = os.pipe()
+    os.set_blocking(term_notify_write_fd, False)
     term_notify_read_pipe: IO[bytes] = os.fdopen(
         term_notify_read_fd, "rb", buffering=0
     )
@@ -389,7 +391,14 @@ def socket_list_stop_sync(sock_idx: int) -> None:
         assert target_socket_info.term_notify_read_pipe is not None
         target_socket_info.should_terminate = True
         target_socket_info.listen_socket.close()
-        while target_socket_info.term_notify_write_pipe.write(b"\x00") == 0:
+        try:
+            while target_socket_info.term_notify_write_pipe.write(
+                b"\x00"
+            ) == 0:
+                pass
+        except BrokenPipeError:
+            # Thread is already in the process of shutting down, we can ignore
+            # this
             pass
         PrivleapdGlobal.socket_list.pop(cast(SupportsIndex, sock_idx))
 
@@ -568,7 +577,9 @@ def handle_control_session(control_session: PrivleapSession) -> None:
             logging.critical(
                 "privleapd mis-parsed a control command from the client!"
             )
-            sys.exit(2)
+            # Need to explicitly kill privleapd and exit the thread
+            os.kill(os.getpid(), signal.SIGINT)
+            sys.exit(1)
     finally:
         control_session.close_session()
 
@@ -744,12 +755,18 @@ def authorize_user(
         # We need to get the list of groups this user is a member of to
         # determine whether they are authorized or not.
         user_gid: int = pwd.getpwnam(user_name).pw_gid
-        group_list: list[str] = [
-            grp.getgrgid(gid).gr_name
-            for gid in os.getgrouplist(user_name, user_gid)
-        ]
-        for group in group_list:
-            if group in action.auth_groups:
+        for gid in os.getgrouplist(user_name, user_gid):
+            try:
+                group_name: str = grp.getgrgid(gid).gr_name
+            except Exception as e:
+                logging.warning(
+                    "Error looking up group %d of account '%s', skipping.",
+                    gid,
+                    user_name,
+                    exc_info=e,
+                )
+                continue
+            if group_name in action.auth_groups:
                 return PrivleapdAuthStatus.AUTHORIZED
 
     # Action had restrictions that could not be met, deny access
@@ -805,11 +822,8 @@ def check_early_action_terminate(
     assert comm_session.backend_socket is not None
 
     if listen_socket_info.should_terminate:
-        with listen_socket_info.term_notify_lock:
-            if not listen_socket_info.term_notify_pipes_closed:
-                listen_socket_info.term_notify_read_pipe.close()
-                listen_socket_info.term_notify_write_pipe.close()
-                listen_socket_info.term_notify_pipes_closed = True
+        listen_socket_info.term_notify_read_pipe.close()
+        listen_socket_info.term_notify_write_pipe.close()
         return True
 
     if comm_session.backend_socket.fileno() in ready_fds:
@@ -823,6 +837,7 @@ def check_early_action_terminate(
     return False
 
 
+# pylint: disable=too-many-branches
 def send_action_results(
     comm_session: PrivleapSession,
     action_name: str,
@@ -869,11 +884,17 @@ def send_action_results(
                 ):
                     return
 
-                stdout_buf: bytes | None = action_process.stdout.read(1024)
-                stderr_buf: bytes | None = action_process.stderr.read(1024)
+                stdout_buf: bytes | None = None
+                stderr_buf: bytes | None = None
+
+                if not stdout_done:
+                    stdout_buf = action_process.stdout.read(1024)
+                if not stderr_done:
+                    stderr_buf = action_process.stderr.read(1024)
 
                 if stdout_buf == b"":
                     stdout_done = True
+                    epoll_obj.unregister(action_process.stdout.fileno())
                 elif stdout_buf is not None:
                     if not send_msg_safe(
                         comm_session,
@@ -883,6 +904,7 @@ def send_action_results(
 
                 if stderr_buf == b"":
                     stderr_done = True
+                    epoll_obj.unregister(action_process.stderr.fileno())
                 elif stderr_buf is not None:
                     if not send_msg_safe(
                         comm_session,
@@ -1002,7 +1024,7 @@ def handle_signal_message(
     )
     if desired_action is None:
         auth_end_time: float = auth_start_time + 3
-        auth_fail_sleep_time: float = auth_end_time - auth_start_time
+        auth_fail_sleep_time: float = auth_end_time - time.monotonic()
         if auth_fail_sleep_time > 0:
             time.sleep(auth_fail_sleep_time)
         send_msg_safe(
@@ -1086,7 +1108,7 @@ def handle_access_check_message(
 
     if unauth_signal_name_list_len > 0:
         auth_end_time: float = auth_start_time + 3
-        auth_fail_sleep_time: float = auth_end_time - auth_start_time
+        auth_fail_sleep_time: float = auth_end_time - time.monotonic()
         if auth_fail_sleep_time > 0:
             time.sleep(auth_fail_sleep_time)
         send_msg_safe(
@@ -1624,6 +1646,7 @@ def prep_sock_notify_pipe() -> None:
     """
 
     PrivleapdGlobal.ctm_read_fd, PrivleapdGlobal.ctm_write_fd = os.pipe()
+    os.set_blocking(PrivleapdGlobal.ctm_read_fd, False)
     PrivleapdGlobal.ctm_read_pipe = os.fdopen(
         PrivleapdGlobal.ctm_read_fd, "rb", buffering=0
     )
@@ -1648,17 +1671,23 @@ def control_handler_loop() -> NoReturn:
         )
         assert "type" in control_request
 
-        match control_request["type"]:
-            case "control_session":
-                assert "control_session" in control_request
-                assert isinstance(
-                    control_request["control_session"], PrivleapSession
-                )
-                handle_control_session(control_request["control_session"])
-            case "destroy_comm_sock":
-                assert "user_name" in control_request
-                assert isinstance(control_request["user_name"], str)
-                _, _ = destroy_comm_socket(control_request["user_name"])
+        try:
+            match control_request["type"]:
+                case "control_session":
+                    assert "control_session" in control_request
+                    assert isinstance(
+                        control_request["control_session"], PrivleapSession
+                    )
+                    handle_control_session(control_request["control_session"])
+                case "destroy_comm_sock":
+                    assert "user_name" in control_request
+                    assert isinstance(control_request["user_name"], str)
+                    _, _ = destroy_comm_socket(control_request["user_name"])
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            # Need to explicitly kill privleapd and exit the thread
+            os.kill(os.getpid(), signal.SIGINT)
+            sys.exit(1)
 
 
 def main_loop() -> NoReturn:
@@ -1671,26 +1700,25 @@ def main_loop() -> NoReturn:
     """
 
     assert PrivleapdGlobal.ctm_read_pipe is not None
-    epoll_fd_set: set[int] = set()
+    epoll_obj_list: list[PrivleapdSocketInfo] = []
     epoll_obj: select.epoll = select.epoll()
     epoll_obj.register(PrivleapdGlobal.ctm_read_fd, select.EPOLLIN)
     socket_list_changed: bool = True
 
     while True:
         if socket_list_changed:
-            read_sock_fileno_list: list[int] = [
-                sock_obj.backend_socket.fileno()
-                for sock_obj in [
-                    x.listen_socket for x in PrivleapdGlobal.socket_list
-                ]
-                if sock_obj.backend_socket is not None
-            ]
-            read_sock_fileno_set: set[int] = set(read_sock_fileno_list)
-            for register_fileno in read_sock_fileno_set - epoll_fd_set:
-                epoll_obj.register(register_fileno, select.EPOLLIN)
-            epoll_fd_set.update(read_sock_fileno_set)
-            for remove_fileno in epoll_fd_set - read_sock_fileno_set:
-                epoll_fd_set.remove(remove_fileno)
+            with PrivleapdGlobal.socket_list_lock:
+                for current_socket in PrivleapdGlobal.socket_list:
+                    if current_socket in epoll_obj_list:
+                        continue
+                    assert (
+                        current_socket.listen_socket.backend_socket is not None
+                    )
+                    epoll_obj.register(
+                        current_socket.listen_socket.backend_socket.fileno(),
+                        select.EPOLLIN,
+                    )
+                epoll_obj_list = copy.copy(PrivleapdGlobal.socket_list)
             socket_list_changed = False
 
         epoll_event_fd_list: list[int] = [x[0] for x in epoll_obj.poll(5)]
@@ -1701,7 +1729,7 @@ def main_loop() -> NoReturn:
             # main thread needs to synchronize with the control thread
             # when this is done to prevent losing track of or not
             # noticing a new socket.
-            PrivleapdGlobal.ctm_read_pipe.read(1)
+            PrivleapdGlobal.ctm_read_pipe.read()
             with PrivleapdGlobal.socket_list_lock:
                 pass
             socket_list_changed = True
