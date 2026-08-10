@@ -433,7 +433,7 @@ def main() -> NoReturn:
     for arg in sys.argv[1:]:
         if arg in ("-c", "--check") and not end_of_options:
             LeaprunGlobal.check_mode = True
-        elif arg == "--test":
+        elif arg == "--test" and not end_of_options:
             LeaprunGlobal.test_mode = True
         elif (arg == "--") and not end_of_options:
             end_of_options = True
