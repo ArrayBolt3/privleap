@@ -1881,15 +1881,22 @@ def main_loop() -> NoReturn:
             PrivleapdGlobal.ctm_read_pipe.read()
             with PrivleapdGlobal.socket_list_lock:
                 pass
-            # Notify only after the sync completes, so a stalled read or lock
-            # acquisition cannot report the daemon as healthy.
-            PrivleapdGlobal.sdnotify_object.notify("WATCHDOG=1")
             socket_list_changed = True
-            continue
+            # Drop the notification fd but still service any listening fds
+            # ready in the same poll, so a steady stream of connection changes
+            # cannot starve their resource backoff / watchdog suppression.
+            epoll_event_fd_list = [
+                ready_fd
+                for ready_fd in epoll_event_fd_list
+                if ready_fd != PrivleapdGlobal.ctm_read_fd
+            ]
 
-        # Note that if we get this far, PrivleapdGlobal.ctm_read_fd is NOT in
-        # epoll_event_fd_list.
-        if dispatch_ready_sockets(epoll_event_fd_list):
+        # Notify only after the connection-change sync (if any) and the socket
+        # dispatch complete, so a stalled sync or a resource-exhausted accept
+        # cannot report the daemon as healthy.
+        if not epoll_event_fd_list:
+            PrivleapdGlobal.sdnotify_object.notify("WATCHDOG=1")
+        elif dispatch_ready_sockets(epoll_event_fd_list):
             PrivleapdGlobal.sdnotify_object.notify("WATCHDOG=1")
         else:
             # A listening socket hit transient resource exhaustion (e.g.

@@ -32,7 +32,7 @@ Run with:
 
 import errno
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 # Only base-safe symbols are imported at module load, so the behavioral
 # main_loop tests below still execute (and fail on the real defect) when this
@@ -209,7 +209,7 @@ class DaemonDefectTests(unittest.TestCase):
         with mock.patch.object(privleapd, "select", fake_select):
             try:
                 privleapd.main_loop()
-            except BaseException as exc:  # noqa: BLE001 - inspect what escaped
+            except (Exception, SystemExit) as exc:  # noqa: BLE001 - inspect what escaped
                 raised = exc
 
         self.assertIsInstance(
@@ -286,7 +286,7 @@ class DaemonDefectTests(unittest.TestCase):
         ) as sleep_mock:
             try:
                 privleapd.main_loop()
-            except BaseException as exc:  # noqa: BLE001
+            except (Exception, SystemExit) as exc:  # noqa: BLE001
                 raised = exc
 
         self.assertIsInstance(
@@ -316,7 +316,7 @@ class DaemonDefectTests(unittest.TestCase):
         with mock.patch.object(privleapd, "select", fake_select):
             try:
                 privleapd.main_loop()
-            except BaseException as exc:  # noqa: BLE001
+            except (Exception, SystemExit) as exc:  # noqa: BLE001
                 raised = exc
 
         self.assertIsInstance(raised, _StopLoop)
@@ -381,7 +381,7 @@ class DaemonDefectTests(unittest.TestCase):
         ) as sleep_mock:
             try:
                 privleapd.main_loop()
-            except BaseException as exc:  # noqa: BLE001
+            except (Exception, SystemExit) as exc:  # noqa: BLE001
                 raised = exc
 
         self.assertIsInstance(
@@ -442,6 +442,84 @@ class DaemonDefectTests(unittest.TestCase):
         )
         thread_mock.assert_not_called()
 
+    # ----- Restructure: ctm + EMFILE in the same poll batch -----
+
+    def test_connection_change_still_dispatches_and_backs_off_on_emfile(
+        self,
+    ) -> None:
+        """
+        A single poll batch carries BOTH the connection-change notification
+        (ctm_read_fd) AND a listening fd whose accept() hits EMFILE. The
+        restructured loop must, in that same iteration:
+          (a) consume the ctm notification (read the pipe + sync the lock),
+          (b) still dispatch the listening fd so its EMFILE backoff runs
+              (time.sleep), and
+          (c) WITHHOLD the watchdog ping for that iteration.
+
+        Canary: the OLD loop `continue`d right after the ctm read (and pinged
+        WATCHDOG=1 first), so the co-occurring EMFILE fd was never dispatched --
+        `sleep` would not be called AND the watchdog WOULD be pinged. Both
+        assertions below fail on that old behavior.
+        """
+        read_calls: list[int] = [0]
+
+        class _CountingReadPipe:
+            def read(self) -> bytes:
+                read_calls[0] += 1
+                return b""
+
+        emfile_fd = 42
+        ctm_fd = PrivleapdGlobal.ctm_read_fd
+        PrivleapdGlobal.ctm_read_pipe = (
+            _CountingReadPipe()  # type: ignore[assignment]
+        )
+        sock_info = _make_comm_sock_info(
+            emfile_fd, raise_exc=OSError(errno.EMFILE, "too many open files")
+        )
+        PrivleapdGlobal.socket_list = [sock_info]
+
+        # ctm_read_fd and the EMFILE listen fd ready together in one batch.
+        fake_epoll = _FakeEpoll([[(ctm_fd, 1), (emfile_fd, 1)]])
+        fake_select = mock.Mock()
+        fake_select.epoll = lambda: fake_epoll
+        fake_select.EPOLLIN = 1
+
+        raised: BaseException | None = None
+        with mock.patch.object(privleapd, "select", fake_select), mock.patch(
+            "privleap.privleapd.time.sleep"
+        ) as sleep_mock:
+            try:
+                privleapd.main_loop()
+            except (Exception, SystemExit) as exc:  # noqa: BLE001
+                raised = exc
+
+        self.assertIsInstance(
+            raised, _StopLoop, f"loop ended unexpectedly: {raised!r}"
+        )
+        # (a) the connection-change notification was consumed this iteration.
+        self.assertEqual(
+            read_calls[0],
+            1,
+            "the ctm notification must be read exactly once this iteration",
+        )
+        # (b) the co-occurring EMFILE listen fd was still dispatched, so its
+        # backoff ran -- proving ctm no longer starves resource backoff.
+        sleep_mock.assert_called_once_with(
+            privleapd.accept_resource_backoff_seconds
+        )
+        # ...and the EMFILE socket never established a session.
+        self.assertFalse(
+            sock_info.listen_socket.session_started  # pylint: disable=no-member
+        )
+        # (c) the watchdog was withheld: neither the ctm path nor the backing-off
+        # dispatch may report the pegged, non-serving daemon as healthy.
+        self.assertNotIn(
+            "WATCHDOG=1",
+            self.notifier.messages,
+            "watchdog must be withheld when a co-occurring listen fd is backing "
+            "off on EMFILE, even though a connection change was consumed",
+        )
+
     # ----- Refinement 1: watchdog ping ordering on a connection change -----
 
     def test_connection_change_pings_watchdog_after_read_and_lock(self) -> None:
@@ -492,7 +570,7 @@ class DaemonDefectTests(unittest.TestCase):
             with mock.patch.object(privleapd, "select", fake_select):
                 try:
                     privleapd.main_loop()
-                except BaseException as exc:  # noqa: BLE001
+                except (Exception, SystemExit) as exc:  # noqa: BLE001
                     raised = exc
         finally:
             PrivleapdGlobal.socket_list_lock = saved_lock
