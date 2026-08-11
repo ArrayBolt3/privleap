@@ -607,7 +607,6 @@ class DaemonDefectTests(unittest.TestCase):
             "watchdog must be pinged AFTER the socket_list_lock sync",
         )
 
-
     # ----- Shared term_notify pipes must survive a sibling's terminate -----
 
     def test_early_terminate_does_not_close_shared_term_notify_pipes(
