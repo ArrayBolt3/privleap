@@ -885,8 +885,16 @@ def check_early_action_terminate(
     assert comm_session.backend_socket is not None
 
     if listen_socket_info.should_terminate:
-        listen_socket_info.term_notify_read_pipe.close()
-        listen_socket_info.term_notify_write_pipe.close()
+        # Do NOT close the shared term_notify pipes here. Several comm threads
+        # for the same account share one PrivleapdSocketInfo and each registers
+        # term_notify_read_fd in its own epoll; closing it from the first thread
+        # to terminate removes a sibling's still-registered fd and can make that
+        # sibling miss its terminate wake (it would keep blocking on its action
+        # stdio). The single wake byte is never consumed, so the read fd stays
+        # readable (level-triggered) and every sibling observes should_terminate
+        # and returns. The pipes are released when the socket_info -- popped
+        # from socket_list in the same critical section that sets
+        # should_terminate -- is dereferenced.
         return True
 
     if comm_session.backend_socket.fileno() in ready_fds:

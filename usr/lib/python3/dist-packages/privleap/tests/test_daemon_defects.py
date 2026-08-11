@@ -31,8 +31,10 @@ Run with:
 """
 
 import errno
+import os
 import unittest
 import unittest.mock as mock
+from typing import IO
 
 # Only base-safe symbols are imported at module load, so the behavioral
 # main_loop tests below still execute (and fail on the real defect) when this
@@ -71,6 +73,17 @@ class _FakeBackendSocket:
 
     def fileno(self) -> int:
         return self._fd
+
+
+class _TermCommSession:
+    """
+    Minimal comm-session double for check_early_action_terminate: it only needs
+    a backend_socket exposing fileno() and a user_name for logging.
+    """
+
+    def __init__(self, fd: int, user_name: str = "testuser") -> None:
+        self.backend_socket = _FakeBackendSocket(fd)
+        self.user_name = user_name
 
 
 class _FakeSession:
@@ -593,6 +606,113 @@ class DaemonDefectTests(unittest.TestCase):
             notify_idx,
             "watchdog must be pinged AFTER the socket_list_lock sync",
         )
+
+
+    # ----- Shared term_notify pipes must survive a sibling's terminate -----
+
+    def test_early_terminate_does_not_close_shared_term_notify_pipes(
+        self,
+    ) -> None:
+        """
+        Several comm threads for one account share a single PrivleapdSocketInfo
+        and each epolls its term_notify_read_fd. When should_terminate is set,
+        check_early_action_terminate must return True WITHOUT closing the shared
+        term_notify pipes -- otherwise the first sibling to terminate would yank
+        the read fd out from under a still-blocking sibling, which could miss its
+        terminate wake.
+
+        This drives two sibling calls against the SAME socket_info (real
+        os.pipe()-backed term_notify pipes). Both must return True and the
+        shared pipes must remain OPEN after both calls.
+
+        Canary: restoring the old per-thread close (term_notify_read_pipe.close()
+        / term_notify_write_pipe.close()) in the should_terminate branch makes
+        the pipes read `.closed is True` after the first call, and the second
+        call would then operate on a closed pipe -- failing the assertions below.
+        """
+        term_notify_read_fd: int
+        term_notify_write_fd: int
+        term_notify_read_fd, term_notify_write_fd = os.pipe()
+        os.set_blocking(term_notify_write_fd, False)
+        read_pipe: IO[bytes] = os.fdopen(
+            term_notify_read_fd, "rb", buffering=0
+        )
+        write_pipe: IO[bytes] = os.fdopen(
+            term_notify_write_fd, "wb", buffering=0
+        )
+        # Emulate the daemon: a single wake byte written, never consumed, so the
+        # read fd stays level-triggered readable for every sibling.
+        write_pipe.write(b"\x00")
+
+        sock_info = PrivleapdSocketInfo(
+            listen_socket=_FakeListenSocket(  # type: ignore[arg-type]
+                50, PrivleapSocketType.COMMUNICATION
+            ),
+            term_notify_read_fd=term_notify_read_fd,
+            term_notify_write_fd=term_notify_write_fd,
+            term_notify_read_pipe=read_pipe,
+            term_notify_write_pipe=write_pipe,
+            should_terminate=True,
+        )
+
+        try:
+            # A comm-session whose backend fd is deliberately NOT in ready_fds,
+            # so the should_terminate branch (not the client-TERMINATE branch)
+            # is what returns True.
+            session_a = _TermCommSession(60)
+            session_b = _TermCommSession(61)
+            ready_fds: list[int] = []
+
+            # First sibling terminates.
+            result_a = privleapd.check_early_action_terminate(
+                sock_info, ready_fds, session_a, "testaction"  # type: ignore[arg-type]
+            )
+            self.assertIs(
+                result_a,
+                True,
+                "the first sibling must observe should_terminate and return True",
+            )
+            self.assertIs(
+                read_pipe.closed,
+                False,
+                "the first sibling must NOT close the shared term_notify read "
+                "pipe",
+            )
+            self.assertIs(
+                write_pipe.closed,
+                False,
+                "the first sibling must NOT close the shared term_notify write "
+                "pipe",
+            )
+
+            # Second sibling terminates against the SAME socket_info; the pipes
+            # must still be intact so this call behaves identically.
+            result_b = privleapd.check_early_action_terminate(
+                sock_info, ready_fds, session_b, "testaction"  # type: ignore[arg-type]
+            )
+            self.assertIs(
+                result_b,
+                True,
+                "the second sibling must also observe should_terminate and "
+                "return True on the still-open shared pipes",
+            )
+            self.assertIs(
+                read_pipe.closed,
+                False,
+                "the shared term_notify read pipe must remain open after both "
+                "siblings terminate",
+            )
+            self.assertIs(
+                write_pipe.closed,
+                False,
+                "the shared term_notify write pipe must remain open after both "
+                "siblings terminate",
+            )
+        finally:
+            if not read_pipe.closed:
+                read_pipe.close()
+            if not write_pipe.closed:
+                write_pipe.close()
 
 
 if __name__ == "__main__":
