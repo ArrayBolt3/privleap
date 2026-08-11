@@ -1300,7 +1300,14 @@ def handle_comm_socket_conn(comm_socket_info: PrivleapdSocketInfo) -> bool:
             comm_socket_info.listen_socket.user_name,
             e,
         )
-        comm_session.close_session()
+        try:
+            comm_session.close_session()
+        except OSError:
+            # The client may already be gone, in which case close_session's
+            # shutdown() raises. Ignore it -- we are backing off anyway, and
+            # letting it escape would crash the daemon, the very failure this
+            # handler exists to prevent.
+            pass
         return False
     return True
 

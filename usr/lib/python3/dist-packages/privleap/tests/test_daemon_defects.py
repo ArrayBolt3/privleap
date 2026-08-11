@@ -32,9 +32,8 @@ Run with:
 
 import errno
 import os
-import unittest
-import unittest.mock as mock
 from typing import IO
+from unittest import TestCase, main, mock
 
 # Only base-safe symbols are imported at module load, so the behavioral
 # main_loop tests below still execute (and fail on the real defect) when this
@@ -94,6 +93,20 @@ class _FakeSession:
 
     def close_session(self) -> None:
         self.closed = True
+
+
+class _RaisingCloseSession:
+    """
+    A session whose close_session() raises OSError, emulating a client that
+    already disconnected (shutdown() then raises ENOTCONN).
+    """
+
+    def __init__(self) -> None:
+        self.close_attempted = False
+
+    def close_session(self) -> None:
+        self.close_attempted = True
+        raise OSError(errno.ENOTCONN, "Transport endpoint is not connected")
 
 
 class _StartRaisesThread:
@@ -174,7 +187,7 @@ def _make_comm_sock_info(
     )
 
 
-class DaemonDefectTests(unittest.TestCase):
+class DaemonDefectTests(TestCase):
     def setUp(self) -> None:
         # Save global state we mutate so each test is isolated.
         self._saved_socket_list = PrivleapdGlobal.socket_list
@@ -363,6 +376,31 @@ class DaemonDefectTests(unittest.TestCase):
         self.assertTrue(
             session.closed,
             "the accepted session must be closed on thread exhaustion",
+        )
+
+    def test_thread_exhaustion_close_session_oserror_does_not_escape(
+        self,
+    ) -> None:
+        """
+        On thread exhaustion the handler closes the accepted session; if the
+        client already disconnected, close_session's shutdown() raises OSError.
+        That must be swallowed -- letting it escape handle_comm_socket_conn ->
+        dispatch_ready_sockets -> main_loop would crash the root daemon, the very
+        failure this handler prevents. Canary: without the try/except OSError
+        guard, handle_comm_socket_conn raises OSError here.
+        """
+        session = _RaisingCloseSession()
+        sock_info = _make_comm_sock_info(42, session=session)
+        with mock.patch.object(privleapd, "Thread", _StartRaisesThread):
+            result = handle_comm_socket_conn(sock_info)
+        self.assertIs(
+            result,
+            False,
+            "a raising close_session must still back off, not propagate",
+        )
+        self.assertTrue(
+            session.close_attempted,
+            "close_session must have been attempted",
         )
 
     def test_main_loop_survives_thread_exhaustion(self) -> None:
@@ -594,7 +632,11 @@ class DaemonDefectTests(unittest.TestCase):
         self.assertIn("read", events)
         self.assertIn(("notify", "WATCHDOG=1"), events)
         read_idx = events.index("read")
-        first_lock_idx = events.index("lock")
+        # The lock AFTER the read is the ctm connection-change sync lock, not
+        # the initial socket_list_changed registration lock; pin the assertion
+        # to that one so deleting the sync `with ... socket_list_lock: pass`
+        # actually fails this test.
+        sync_lock_idx = events.index("lock", read_idx)
         notify_idx = events.index(("notify", "WATCHDOG=1"))
         self.assertLess(
             read_idx,
@@ -602,7 +644,7 @@ class DaemonDefectTests(unittest.TestCase):
             "watchdog must be pinged AFTER the ctm pipe read",
         )
         self.assertLess(
-            first_lock_idx,
+            sync_lock_idx,
             notify_idx,
             "watchdog must be pinged AFTER the socket_list_lock sync",
         )
@@ -715,4 +757,4 @@ class DaemonDefectTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()
