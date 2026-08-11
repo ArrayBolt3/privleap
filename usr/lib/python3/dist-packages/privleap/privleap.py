@@ -1314,7 +1314,11 @@ class PrivleapCommon:
 
         try:
             stat_result: os.stat_result = os.stat(file_id)
-        except (OSError, ValueError):
+        except (OSError, ValueError, OverflowError):
+            # OSError: missing path / bad fd. ValueError: empty or NUL-containing
+            # path. OverflowError: an out-of-range integer fd (os.stat raises it,
+            # not OSError) -- still a bad fd, so fail closed per the contract
+            # above rather than letting it escape.
             return False
         if stat_result.st_uid != 0:
             return False
