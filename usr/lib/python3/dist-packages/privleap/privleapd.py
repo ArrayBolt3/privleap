@@ -301,8 +301,11 @@ def socket_list_add_sync(new_sock: PrivleapSocket) -> None:
 
     assert PrivleapdGlobal.ctm_write_pipe is not None
     with PrivleapdGlobal.socket_list_lock:
-        while PrivleapdGlobal.ctm_write_pipe.write(b"\x00") == 0:
-            pass
+        # A non-blocking write returns None (never 0) when the pipe is full; a
+        # full pipe already holds an unconsumed wake byte, so a single attempt
+        # guarantees a pending wake either way. (The old `while ... == 0` never
+        # retried, since write() does not return 0.)
+        PrivleapdGlobal.ctm_write_pipe.write(b"\x00")
         socket_list_add(new_sock)
 
 
@@ -383,8 +386,11 @@ def socket_list_stop_sync(sock_idx: int) -> None:
 
     assert PrivleapdGlobal.ctm_write_pipe is not None
     with PrivleapdGlobal.socket_list_lock:
-        while PrivleapdGlobal.ctm_write_pipe.write(b"\x00") == 0:
-            pass
+        # A non-blocking write returns None (never 0) when the pipe is full; a
+        # full pipe already holds an unconsumed wake byte, so a single attempt
+        # guarantees a pending wake either way. (The old `while ... == 0` never
+        # retried, since write() does not return 0.)
+        PrivleapdGlobal.ctm_write_pipe.write(b"\x00")
         target_socket_info: PrivleapdSocketInfo = PrivleapdGlobal.socket_list[
             sock_idx
         ]
@@ -393,10 +399,11 @@ def socket_list_stop_sync(sock_idx: int) -> None:
         target_socket_info.should_terminate = True
         target_socket_info.listen_socket.close()
         try:
-            while target_socket_info.term_notify_write_pipe.write(
-                b"\x00"
-            ) == 0:
-                pass
+            # Single attempt: a non-blocking write returns None (never 0) on a
+            # full pipe, which already holds the never-consumed wake byte, so
+            # the terminate is signalled either way. (The old `while ... == 0`
+            # never retried.)
+            target_socket_info.term_notify_write_pipe.write(b"\x00")
         except BrokenPipeError:
             # Thread is already in the process of shutting down, we can ignore
             # this
