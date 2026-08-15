@@ -1,3 +1,26 @@
+commit 26dfbf3fe3f0403db3b47240900383d32bf2444a
+Merge: 1e16c87 f9f0756
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Sat Aug 15 12:34:49 2026 -0400
+
+    Merge remote-tracking branch 'org-ai-assisted/master'
+
+commit 1e16c8763511e21831b0a969dc7b069924502638
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Sat Aug 15 16:12:17 2026 +0000
+
+    bumped changelog version
+
+commit f9f0756f337bc455d703489d53a04b14d29a8723
+Merge: 0d6addf 8be6f9a
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Mon Aug 10 14:47:00 2026 -0400
+
+    Merge upstream Kicksecure master (privleapd rework) into fork master
+
+    Brings in ArrayBolt3's privleapd deadlock/hang rework (8be6f9a) while keeping
+    the fork-only CodeQL consumer workflows.
+
 commit 8be6f9a182b51bffab80277454345ce0a7b379ea
 Merge: ece46e1 73cc963
 Author: Patrick Schleizer <adrelanos@whonix.org>
@@ -10,6 +33,33 @@ Author: Aaron Rainbolt <arraybolt3@gmail.com>
 Date:   Wed Aug 5 00:02:31 2026 -0400
 
     Various bug and deadlock fixes, adapted from Claude Code
+
+commit 0d6addfa0692cb0ddbf6da58de7b282124197a0a
+Merge: ece46e1 0a01f44
+Author: assisted-by-ai (Bot Account) (Machine Account) <228987186+assisted-by-ai@users.noreply.github.com>
+Date:   Sat Aug 1 05:01:39 2026 -0400
+
+    Merge pull request #6 from org-ai-assisted/ai
+
+    add CodeQL consumer workflows (actions, python)
+
+commit 0a01f44a048084e99c2053b42cecff9d016a1ba3
+Author: claude (dev142 b93fb2c6-e15f-4d45-8566-f3ded893b70e) <noreply@anthropic.com>
+Date:   Fri Jul 31 12:51:45 2026 -0400
+
+    add CodeQL consumer workflows (actions, python)
+
+    - Replaces GitHub default-setup CodeQL (web-UI state, no file
+      representation) with the org's file-based consumer wrappers.
+    - Byte-identical copies of
+      developer-meta-files/consumer-templates/.github/workflows/.
+    - No .github/dm-consumer.yml needed: consumer-codeql-actions.yml
+      passes no dm-consumer-section, and codeql-python's section is
+      optional (ci/dm-consumer-load.sh soft-skips when absent).
+    - queries stays the reusable's default security-and-quality,
+      a superset of the security-extended suite default setup used.
+
+    Generated with assistance from Claude Code.
 
 commit ece46e16458f6e5d96bad2a643ee6959a6353b4d
 Author: Patrick Schleizer <adrelanos@whonix.org>
