@@ -12,6 +12,7 @@
 """privleapd.py - privleap background process."""
 
 import copy
+import errno
 import sys
 import shutil
 import select
@@ -300,8 +301,11 @@ def socket_list_add_sync(new_sock: PrivleapSocket) -> None:
 
     assert PrivleapdGlobal.ctm_write_pipe is not None
     with PrivleapdGlobal.socket_list_lock:
-        while PrivleapdGlobal.ctm_write_pipe.write(b"\x00") == 0:
-            pass
+        # A non-blocking write returns None (never 0) when the pipe is full; a
+        # full pipe already holds an unconsumed wake byte, so a single attempt
+        # guarantees a pending wake either way. (The old `while ... == 0` never
+        # retried, since write() does not return 0.)
+        PrivleapdGlobal.ctm_write_pipe.write(b"\x00")
         socket_list_add(new_sock)
 
 
@@ -382,8 +386,11 @@ def socket_list_stop_sync(sock_idx: int) -> None:
 
     assert PrivleapdGlobal.ctm_write_pipe is not None
     with PrivleapdGlobal.socket_list_lock:
-        while PrivleapdGlobal.ctm_write_pipe.write(b"\x00") == 0:
-            pass
+        # A non-blocking write returns None (never 0) when the pipe is full; a
+        # full pipe already holds an unconsumed wake byte, so a single attempt
+        # guarantees a pending wake either way. (The old `while ... == 0` never
+        # retried, since write() does not return 0.)
+        PrivleapdGlobal.ctm_write_pipe.write(b"\x00")
         target_socket_info: PrivleapdSocketInfo = PrivleapdGlobal.socket_list[
             sock_idx
         ]
@@ -392,10 +399,11 @@ def socket_list_stop_sync(sock_idx: int) -> None:
         target_socket_info.should_terminate = True
         target_socket_info.listen_socket.close()
         try:
-            while target_socket_info.term_notify_write_pipe.write(
-                b"\x00"
-            ) == 0:
-                pass
+            # Single attempt: a non-blocking write returns None (never 0) on a
+            # full pipe, which already holds the never-consumed wake byte, so
+            # the terminate is signalled either way. (The old `while ... == 0`
+            # never retried.)
+            target_socket_info.term_notify_write_pipe.write(b"\x00")
         except BrokenPipeError:
             # Thread is already in the process of shutting down, we can ignore
             # this
@@ -530,10 +538,59 @@ def handle_control_reload_msg(control_session: PrivleapSession) -> None:
         send_msg_safe(control_session, PrivleapControlServerControlErrorMsg())
 
 
-def handle_control_socket_conn(control_socket: PrivleapSocket) -> None:
+# Transient kernel resource-exhaustion errnos. On these, accept() must be
+# retried after a short backoff rather than treated as a hard failure -- the
+# level-triggered epoll loop keeps the listen fd readable, so returning without
+# backing off busy-spins a core at 100% CPU.
+accept_resource_errnos: frozenset[int] = frozenset(
+    {errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM}
+)
+
+# Backoff after a transient accept resource error, in seconds. Slept OUTSIDE
+# socket_list_lock so the control thread is not blocked.
+accept_resource_backoff_seconds: float = 0.1
+
+
+class PrivleapdAcceptError(Enum):
+    """
+    Classification of an exception raised while accepting a connection off a
+    listening socket.
+    """
+
+    # EMFILE/ENFILE/ENOBUFS/ENOMEM: back off, and do not satisfy the watchdog
+    # this iteration.
+    RESOURCE = 1
+    # EAGAIN/EWOULDBLOCK: spurious epoll wakeup or the pending connection
+    # vanished; nothing to accept, not an error.
+    SPURIOUS = 2
+    # Anything else: log it, but it is not a busy-spin risk.
+    OTHER = 3
+
+
+def classify_accept_error(error: BaseException) -> PrivleapdAcceptError:
+    """
+    Classify an exception raised by PrivleapSocket.get_session()/accept().
+
+    May be called by any thread.
+    """
+
+    if isinstance(error, OSError):
+        if error.errno in accept_resource_errnos:
+            return PrivleapdAcceptError.RESOURCE
+        if error.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+            return PrivleapdAcceptError.SPURIOUS
+    return PrivleapdAcceptError.OTHER
+
+
+def handle_control_socket_conn(control_socket: PrivleapSocket) -> bool:
     """
     Handles control socket connections, for creating or destroying comm sockets.
     See control_handler_loop for most of the real logic this triggers.
+
+    Returns False only on a transient resource-exhaustion error, signalling the
+    main loop to back off and to not satisfy the watchdog this iteration.
+    Returns True otherwise (session started, spurious wakeup, or a non-transient
+    error that carries no busy-spin risk).
 
     May only be called by the main thread.
     """
@@ -541,14 +598,27 @@ def handle_control_socket_conn(control_socket: PrivleapSocket) -> None:
     try:
         control_session: PrivleapSession = control_socket.get_session()
     except Exception as e:
+        accept_error: PrivleapdAcceptError = classify_accept_error(e)
+        if accept_error == PrivleapdAcceptError.RESOURCE:
+            # No exc_info: avoids flooding the log with a stack trace on every
+            # ready socket per backoff cycle under sustained EMFILE.
+            logging.error(
+                "Ran out of resources accepting a control connection (%s); "
+                "backing off.",
+                e,
+            )
+            return False
+        if accept_error == PrivleapdAcceptError.SPURIOUS:
+            return True
         logging.error(
             "Could not start control session with client!", exc_info=e
         )
-        return
+        return True
 
     PrivleapdGlobal.control_request_queue.put(
         {"type": "control_session", "control_session": control_session}
     )
+    return True
 
 
 def handle_control_session(control_session: PrivleapSession) -> None:
@@ -822,8 +892,16 @@ def check_early_action_terminate(
     assert comm_session.backend_socket is not None
 
     if listen_socket_info.should_terminate:
-        listen_socket_info.term_notify_read_pipe.close()
-        listen_socket_info.term_notify_write_pipe.close()
+        # Do NOT close the shared term_notify pipes here. Several comm threads
+        # for the same account share one PrivleapdSocketInfo and each registers
+        # term_notify_read_fd in its own epoll; closing it from the first thread
+        # to terminate removes a sibling's still-registered fd and can make that
+        # sibling miss its terminate wake (it would keep blocking on its action
+        # stdio). The single wake byte is never consumed, so the read fd stays
+        # readable (level-triggered) and every sibling observes should_terminate
+        # and returns. The pipes are released when the socket_info -- popped
+        # from socket_list in the same critical section that sets
+        # should_terminate -- is dereferenced.
         return True
 
     if comm_session.backend_socket.fileno() in ready_fds:
@@ -1164,9 +1242,14 @@ def handle_comm_session(
         comm_session.close_session()
 
 
-def handle_comm_socket_conn(comm_socket_info: PrivleapdSocketInfo) -> None:
+def handle_comm_socket_conn(comm_socket_info: PrivleapdSocketInfo) -> bool:
     """
     Handles comm socket connections, for running actions.
+
+    Returns False only on a transient resource-exhaustion error, signalling the
+    main loop to back off and to not satisfy the watchdog this iteration.
+    Returns True otherwise (session started, spurious wakeup, or a non-transient
+    error that carries no busy-spin risk).
 
     May only be called by the main thread.
     """
@@ -1176,12 +1259,25 @@ def handle_comm_socket_conn(comm_socket_info: PrivleapdSocketInfo) -> None:
             comm_socket_info.listen_socket.get_session()
         )
     except Exception as e:
+        accept_error: PrivleapdAcceptError = classify_accept_error(e)
+        if accept_error == PrivleapdAcceptError.RESOURCE:
+            # No exc_info: this fires once per ready socket per backoff cycle
+            # under sustained EMFILE, and a stack trace each time floods the log.
+            logging.error(
+                "Ran out of resources accepting a comm connection from "
+                "account '%s' (%s); backing off.",
+                comm_socket_info.listen_socket.user_name,
+                e,
+            )
+            return False
+        if accept_error == PrivleapdAcceptError.SPURIOUS:
+            return True
         logging.error(
             "Could not start comm session with client run by account '%s'!",
             comm_socket_info.listen_socket.user_name,
             exc_info=e,
         )
-        return
+        return True
 
     # Threads hold references to themselves, thus there is no need to keep our
     # own reference to the thread. See:
@@ -1191,7 +1287,29 @@ def handle_comm_socket_conn(comm_socket_info: PrivleapdSocketInfo) -> None:
         args=[comm_session, comm_socket_info],
         daemon=True,
     )
-    comm_thread.start()
+    try:
+        comm_thread.start()
+    except RuntimeError as e:
+        # Thread exhaustion (RLIMIT_NPROC / kernel thread cap) is a resource
+        # condition, not a bug: closing the accepted session and backing off
+        # keeps the daemon alive instead of letting the RuntimeError escape
+        # main_loop and crash the root process.
+        logging.error(
+            "Could not start a handler thread for account '%s' (%s); "
+            "backing off.",
+            comm_socket_info.listen_socket.user_name,
+            e,
+        )
+        try:
+            comm_session.close_session()
+        except OSError:
+            # The client may already be gone, in which case close_session's
+            # shutdown() raises. Ignore it -- we are backing off anyway, and
+            # letting it escape would crash the daemon, the very failure this
+            # handler exists to prevent.
+            pass
+        return False
+    return True
 
 
 def ensure_running_as_root() -> None:
@@ -1690,6 +1808,60 @@ def control_handler_loop() -> NoReturn:
             sys.exit(1)
 
 
+def dispatch_ready_sockets(epoll_event_fd_list: list[int]) -> bool:
+    """
+    Dispatch epoll-ready listening-socket fds to their handlers.
+
+    A ready fd not present in socket_list is an ordinary race, not a
+    bookkeeping failure: a control thread can remove and close a socket in the
+    window between epoll_obj.poll() and taking socket_list_lock, leaving a stale
+    readiness event for an fd that is gone (or already reused). Such an fd is
+    skipped. Terminating the daemon here (as a prior sys.exit(1) did) is unsafe
+    -- under systemd's StartLimitBurst it can permanently prevent privleapd from
+    restarting.
+
+    Returns True if every dispatched socket was handled healthily, False if a
+    handler hit a transient resource-exhaustion condition and the main loop
+    should back off and skip satisfying the watchdog this iteration.
+
+    May only be called by the main thread.
+    """
+
+    iteration_healthy: bool = True
+    with PrivleapdGlobal.socket_list_lock:
+        for ready_socket_fileno in epoll_event_fd_list:
+            ready_sock_info_obj: PrivleapdSocketInfo | None = None
+            for sock_info_obj in PrivleapdGlobal.socket_list:
+                sock_obj = sock_info_obj.listen_socket
+                assert sock_obj.backend_socket is not None
+                if sock_obj.backend_socket.fileno() == ready_socket_fileno:
+                    ready_sock_info_obj = sock_info_obj
+                    break
+            if ready_sock_info_obj is None:
+                logging.debug(
+                    "privleapd got a ready event for fd %d which is no longer "
+                    "tracked; skipping (socket closed by control thread).",
+                    ready_socket_fileno,
+                )
+                continue
+            if ready_sock_info_obj.listen_socket.socket_type == (
+                PrivleapSocketType.CONTROL
+            ):
+                healthy = handle_control_socket_conn(
+                    ready_sock_info_obj.listen_socket
+                )
+            else:
+                healthy = handle_comm_socket_conn(ready_sock_info_obj)
+            if not healthy:
+                # Transient resource exhaustion (e.g. EMFILE) fails every
+                # accept in this batch identically; stop hammering the rest and
+                # let the caller back off. The remaining ready fds are
+                # level-triggered, so they are re-offered next iteration.
+                iteration_healthy = False
+                break
+    return iteration_healthy
+
+
 def main_loop() -> NoReturn:
     """
     Main processing loop of privleapd. This loop will watch for and accept
@@ -1722,7 +1894,6 @@ def main_loop() -> NoReturn:
             socket_list_changed = False
 
         epoll_event_fd_list: list[int] = [x[0] for x in epoll_obj.poll(5)]
-        PrivleapdGlobal.sdnotify_object.notify("WATCHDOG=1")
 
         if PrivleapdGlobal.ctm_read_fd in epoll_event_fd_list:
             # Connection change, i.e. adding or removing a socket. The
@@ -1733,33 +1904,32 @@ def main_loop() -> NoReturn:
             with PrivleapdGlobal.socket_list_lock:
                 pass
             socket_list_changed = True
-            continue
+            # Drop the notification fd but still service any listening fds
+            # ready in the same poll, so a steady stream of connection changes
+            # cannot starve their resource backoff / watchdog suppression.
+            epoll_event_fd_list = [
+                ready_fd
+                for ready_fd in epoll_event_fd_list
+                if ready_fd != PrivleapdGlobal.ctm_read_fd
+            ]
 
-        # Note that if we get this far, PrivleapdGlobal.ctm_read_fd is NOT in
-        # epoll_event_fd_list, so we don't need to check for its presence and
-        # can assume all fds correspond to active sockets.
-        with PrivleapdGlobal.socket_list_lock:
-            for ready_socket_fileno in epoll_event_fd_list:
-                ready_sock_info_obj: PrivleapdSocketInfo | None = None
-                for sock_info_obj in PrivleapdGlobal.socket_list:
-                    sock_obj = sock_info_obj.listen_socket
-                    assert sock_obj.backend_socket is not None
-                    if sock_obj.backend_socket.fileno() == (
-                        ready_socket_fileno
-                    ):
-                        ready_sock_info_obj = sock_info_obj
-                        break
-                if ready_sock_info_obj is None:
-                    logging.critical("privleapd lost track of a socket!")
-                    sys.exit(1)
-                if ready_sock_info_obj.listen_socket.socket_type == (
-                    PrivleapSocketType.CONTROL
-                ):
-                    handle_control_socket_conn(
-                        ready_sock_info_obj.listen_socket
-                    )
-                else:
-                    handle_comm_socket_conn(ready_sock_info_obj)
+        # Notify only after the connection-change sync (if any) and the socket
+        # dispatch complete, so a stalled sync or a resource-exhausted accept
+        # cannot report the daemon as healthy.
+        if not epoll_event_fd_list:
+            PrivleapdGlobal.sdnotify_object.notify("WATCHDOG=1")
+        elif dispatch_ready_sockets(epoll_event_fd_list):
+            PrivleapdGlobal.sdnotify_object.notify("WATCHDOG=1")
+        else:
+            # A listening socket hit transient resource exhaustion (e.g.
+            # EMFILE). epoll is level-triggered, so the unaccepted connection
+            # keeps the fd readable and the loop would busy-spin a core at 100%
+            # CPU. Back off (slept OUTSIDE socket_list_lock so the control
+            # thread is not blocked), and deliberately skip the watchdog ping so
+            # a sustained inability to accept lets systemd's watchdog restart
+            # the daemon rather than see a pegged, non-serving process as
+            # healthy.
+            time.sleep(accept_resource_backoff_seconds)
 
 
 def print_usage() -> None:

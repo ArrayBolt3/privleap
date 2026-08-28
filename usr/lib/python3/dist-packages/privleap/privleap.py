@@ -1306,9 +1306,20 @@ class PrivleapCommon:
         """
         Returns True if the file pointed to by the path or file descriptor in
         file_id is owned by UID 0 / GID 0 and is not world-writable.
+
+        A path that cannot be stat'd -- missing, empty, containing a null byte,
+        or a bad file descriptor -- cannot be verified as secure, so it is
+        treated as insecure (fail closed) rather than raising.
         """
 
-        stat_result: os.stat_result = os.stat(file_id)
+        try:
+            stat_result: os.stat_result = os.stat(file_id)
+        except (OSError, ValueError, OverflowError):
+            # OSError: missing path / bad fd. ValueError: empty or NUL-containing
+            # path. OverflowError: an out-of-range integer fd (os.stat raises it,
+            # not OSError) -- still a bad fd, so fail closed per the contract
+            # above rather than letting it escape.
+            return False
         if stat_result.st_uid != 0:
             return False
         if stat_result.st_gid != 0:
