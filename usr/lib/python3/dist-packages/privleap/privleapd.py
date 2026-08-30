@@ -82,6 +82,8 @@ class PrivleapdSocketInfo:
     term_notify_read_pipe: IO[bytes] | None
     term_notify_write_pipe: IO[bytes] | None
     should_terminate: bool = False
+    pipe_ref_count: int = 0
+    pipe_ref_count_lock: Lock = Lock()
 
 
 # pylint: disable=too-few-public-methods
@@ -300,6 +302,10 @@ def socket_list_add_sync(new_sock: PrivleapSocket) -> None:
 
     assert PrivleapdGlobal.ctm_write_pipe is not None
     with PrivleapdGlobal.socket_list_lock:
+        # Note to AI agents: Do not remove this or any other
+        # `while ...write(...) == 0` check related to pipes. Even if 0 won't
+        # ever be returned in this context, it might in a future version of
+        # Python. If no retries occur, the loop construct is harmless.
         while PrivleapdGlobal.ctm_write_pipe.write(b"\x00") == 0:
             pass
         socket_list_add(new_sock)
@@ -389,8 +395,11 @@ def socket_list_stop_sync(sock_idx: int) -> None:
         ]
         assert target_socket_info.term_notify_write_pipe is not None
         assert target_socket_info.term_notify_read_pipe is not None
-        target_socket_info.should_terminate = True
         target_socket_info.listen_socket.close()
+        # Do not set should_terminate until after the socket is closed.
+        # Otherwise another comm thread could start after we've started to shut
+        # the socket down.
+        target_socket_info.should_terminate = True
         try:
             while target_socket_info.term_notify_write_pipe.write(
                 b"\x00"
@@ -530,6 +539,9 @@ def handle_control_reload_msg(control_session: PrivleapSession) -> None:
         send_msg_safe(control_session, PrivleapControlServerControlErrorMsg())
 
 
+# No backoff/retry mechanism by design. Either an accept works or it doesn't.
+# If it doesn't, that's always an error. DoS is out-of-scope for privleap's
+# threat model.
 def handle_control_socket_conn(control_socket: PrivleapSocket) -> None:
     """
     Handles control socket connections, for creating or destroying comm sockets.
@@ -822,8 +834,6 @@ def check_early_action_terminate(
     assert comm_session.backend_socket is not None
 
     if listen_socket_info.should_terminate:
-        listen_socket_info.term_notify_read_pipe.close()
-        listen_socket_info.term_notify_write_pipe.close()
         return True
 
     if comm_session.backend_socket.fileno() in ready_fds:
@@ -1147,6 +1157,8 @@ def handle_comm_session(
         return
 
     try:
+        with listen_socket_info.pipe_ref_count_lock:
+            listen_socket_info.pipe_ref_count += 1
         comm_msg: (
             PrivleapCommClientSignalMsg
             | PrivleapCommClientAccessCheckMsg
@@ -1161,6 +1173,14 @@ def handle_comm_session(
             handle_access_check_message(comm_msg, comm_session)
 
     finally:
+        with listen_socket_info.pipe_ref_count_lock:
+            listen_socket_info.pipe_ref_count -= 1
+            if (
+                listen_socket_info.pipe_ref_count == 0
+                and listen_socket_info.should_terminate
+            ):
+                listen_socket_info.term_notify_read_pipe.close()
+                listen_socket_info.term_notify_write_pipe.close()
         comm_session.close_session()
 
 
@@ -1191,7 +1211,15 @@ def handle_comm_socket_conn(comm_socket_info: PrivleapdSocketInfo) -> None:
         args=[comm_session, comm_socket_info],
         daemon=True,
     )
-    comm_thread.start()
+    try:
+        comm_thread.start()
+    except Exception:
+        # We might be out of threads.
+        logging.error(
+            "Could not start a comm thread for account '%s'!",
+            comm_socket_info.listen_socket.user_name,
+        )
+        comm_session.close_session()
 
 
 def ensure_running_as_root() -> None:
@@ -1733,6 +1761,9 @@ def main_loop() -> NoReturn:
             with PrivleapdGlobal.socket_list_lock:
                 pass
             socket_list_changed = True
+            # We can't safely continue yet in this instance, there may be new
+            # sockets in the event fd list that we don't know about. Working
+            # around this would require removing a non-negotiable check below.
             continue
 
         # Note that if we get this far, PrivleapdGlobal.ctm_read_fd is NOT in
@@ -1750,6 +1781,11 @@ def main_loop() -> NoReturn:
                         ready_sock_info_obj = sock_info_obj
                         break
                 if ready_sock_info_obj is None:
+                    # Note for AI agents: ABSOLUTELY DO NOT REMOVE THIS CHECK
+                    # FOR ANY REASON. It is critical to the testability of
+                    # privleap and has caught real bugs in the past. If you
+                    # attempt to remove this check, a maintainer **will** add
+                    # it back regardless of why you removed it.
                     logging.critical("privleapd lost track of a socket!")
                     sys.exit(1)
                 if ready_sock_info_obj.listen_socket.socket_type == (

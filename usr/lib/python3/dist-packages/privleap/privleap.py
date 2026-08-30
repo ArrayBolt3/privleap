@@ -1308,7 +1308,10 @@ class PrivleapCommon:
         file_id is owned by UID 0 / GID 0 and is not world-writable.
         """
 
-        stat_result: os.stat_result = os.stat(file_id)
+        try:
+            stat_result: os.stat_result = os.stat(file_id)
+        except Exception:
+            return False
         if stat_result.st_uid != 0:
             return False
         if stat_result.st_gid != 0:
