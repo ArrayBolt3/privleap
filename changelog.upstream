@@ -1,3 +1,29 @@
+commit f48920f1a31918db54a5d222b0339a88e8dee05f
+Merge: c154071 eff6e8c
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Sun Aug 30 09:50:01 2026 -0400
+
+    Merge remote-tracking branch 'refs/remotes/ArrayBolt3/arraybolt3/trixie'
+
+commit eff6e8ce8a0cd54325f60e54b352a22eb319a4b1
+Author: Aaron Rainbolt <arraybolt3@gmail.com>
+Date:   Fri Aug 28 17:37:38 2026 -0400
+
+    Polish, revert some unacceptable changes from AI and leave notes to prevent them from being suggested again
+
+commit 11172eba5201889a7d6aebe0aac429104b8ed0f4
+Merge: 73cc963 c1c2f36
+Author: Aaron Rainbolt <arraybolt3@gmail.com>
+Date:   Fri Aug 28 15:44:29 2026 -0400
+
+    Merge branch 'ai' into arraybolt3/trixie
+
+commit c15407171c7b71101637333bc6833e8f77c9ec4d
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Sat Aug 15 16:36:30 2026 +0000
+
+    bumped changelog version
+
 commit 26dfbf3fe3f0403db3b47240900383d32bf2444a
 Merge: 1e16c87 f9f0756
 Author: Patrick Schleizer <adrelanos@whonix.org>
@@ -10,6 +36,198 @@ Author: Patrick Schleizer <adrelanos@whonix.org>
 Date:   Sat Aug 15 16:12:17 2026 +0000
 
     bumped changelog version
+
+commit c1c2f3645709f6a19262f7783454edd0ba8dde92
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Wed Aug 12 00:57:47 2026 -0400
+
+    tests: remove test_daemon_defects.py -- daemon tests live in dist-ai
+
+    privleap AGENTS.md: the AI-maintained privleap tests live in org-ai-assisted/
+    dist-ai (usr/share/privleap-tests/), not this repo. The daemon-defect
+    regressions this file held are now in dist-ai's unit_test.py (adapted to its
+    harness, canary-verified), so drop the repo-local copy. This PR is now
+    production-code-only.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit b4c7f2d57a1d407927fd2e56cd3f9a0dffa404b0
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Tue Aug 11 08:33:04 2026 -0400
+
+    check_secure_file_permissions: also fail closed on an out-of-range int fd
+
+    os.stat() on an oversized integer fd (e.g. >= 2**63) raises OverflowError, not
+    OSError -- so it escaped the (OSError, ValueError) guard and contradicted the
+    docstring's fail-closed promise for a bad file descriptor. Add OverflowError to
+    the caught tuple. Currently unreachable (callers pass a path string or a small
+    valid fd); this closes the contract gap. Found via codex/reviewdrain.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit bfc545001fef3f3beab97d3ba0d11f50cc63cdc1
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Tue Aug 11 06:18:42 2026 -0400
+
+    privleapd: guard close_session in the thread-exhaustion handler; tighten tests
+
+    Addresses PR reviewer findings:
+    - Thread-exhaustion handler: close_session() calls socket.shutdown(), which
+      raises OSError if the client already disconnected. That escaped the handler
+      (-> dispatch_ready_sockets -> main_loop) and could crash the daemon -- the
+      very failure the handler prevents. Guard it; canary regression test added.
+    - Lock-ordering test: pin the assertion to the ctm-sync lock (events.index
+      after the read event), not the initial registration lock, so removing the
+      sync 'with socket_list_lock: pass' actually fails the canary.
+    - Test import: use 'from unittest import ...' to clear the CodeQL
+      import-and-import-from nit on the test file.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit d00dbe5e814436f0426c43832391bb26fe2cd469
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Tue Aug 11 06:09:15 2026 -0400
+
+    privleapd: write the wake byte once instead of a dead retry loop
+
+    The three `while pipe.write(b"\x00") == 0` loops (ctm add/stop sync and the
+    term_notify terminate) never retried: a non-blocking FileIO.write() returns
+    None -- never 0 -- when the pipe is full, so the condition was always false.
+    Behaviour was already a single attempt; make that explicit. A full pipe already
+    holds an unconsumed wake byte, so one write guarantees a pending wake either
+    way. No behaviour change (surfaced by the ai-review claude pass).
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit 348b9ac50c673cb5d081b4c1eb438e52deec340c
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Tue Aug 11 06:02:18 2026 -0400
+
+    test_daemon_defects: drop an extra blank line before the term_notify test
+
+    ai-review (ruff) nit on the new test; one blank line between methods.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit 251b17783cdca59a2bc1d678514d1fc4ee2516ba
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Tue Aug 11 05:51:48 2026 -0400
+
+    privleapd: do not close the shared term_notify pipes on a per-thread terminate
+
+    check_early_action_terminate closed the term_notify read/write pipes when
+    should_terminate was set. Several comm threads for one account share a single
+    PrivleapdSocketInfo and each registers term_notify_read_fd in its own epoll, so
+    the first sibling to terminate closed that fd out from under the others -- a
+    sibling then blocked on its action stdio could miss its terminate wake and keep
+    running. The single wake byte is never consumed, so leaving the read fd open
+    keeps it readable (level-triggered): every sibling observes should_terminate and
+    returns. The pipes are released when the socket_info -- popped from socket_list
+    in the same critical section that sets should_terminate -- is dereferenced.
+    Canary regression test added (fails on the old per-thread close).
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit c6ac0500ee9d2a20a6e2127ed1a0ef620873a988
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Mon Aug 10 15:16:35 2026 -0400
+
+    privleapd main_loop: service listening fds in the same poll as a connection-change
+
+    Addresses PR reviewer feedback. Previously a connection-change (ctm) event
+    'continue'd before dispatch, so a listening fd hitting EMFILE in the same poll
+    was skipped -- a steady stream of connection changes could starve its resource
+    backoff and keep the watchdog satisfied. Now the ctm fd is consumed and dropped
+    from the batch and any remaining ready fds are still dispatched; the watchdog is
+    pinged only after the sync and a healthy dispatch, withheld on a resource
+    iteration. Canary-proven regression test added (co-occurring ctm + EMFILE: the
+    backoff runs and the watchdog is withheld that iteration).
+
+    Also narrow the tests' 'except BaseException' to '(Exception, SystemExit)' and
+    import unittest.mock directly, clearing CodeQL code-scanning nits on the test
+    file while preserving the SystemExit / thread-exhaustion assertions.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit 880e3bc0979a479e4508ab15e847986a42fb207d
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Mon Aug 10 15:07:59 2026 -0400
+
+    check_secure_file_permissions: fail closed on an unstattable path
+
+    os.stat raised on an empty path (FileNotFoundError), a nonexistent file, or a
+    path with an embedded NUL (ValueError, not OSError), so the check was not total
+    and crashed its callers. A path that cannot be stat'd cannot be verified as
+    secure: catch (OSError, ValueError) and return False. Fixes the dist-ai
+    test_check_secure_file_permissions_is_total property test.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit 42e7a3385b0248d02ce03ff755ddcda492570f28
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Mon Aug 10 15:07:58 2026 -0400
+
+    privleapd: harden the accept/watchdog paths (ai-review follow-ups)
+
+    Reviewing the defect fixes surfaced four refinements:
+    - Connection-change path pings WATCHDOG=1 only AFTER the ctm read + lock, so a
+      stalled sync cannot report the daemon healthy.
+    - dispatch_ready_sockets breaks the per-fd loop on a transient RESOURCE error
+      instead of hammering (and log-flooding) every remaining ready socket.
+    - RESOURCE accept-error logs drop exc_info, so sustained EMFILE does not write a
+      stack trace per ready socket per backoff cycle.
+    - comm_thread.start() RuntimeError (thread exhaustion) is caught, the session
+      closed, and treated as a resource backoff, instead of escaping main_loop and
+      crashing the root daemon.
+
+    Canary-proven regression tests added to test_daemon_defects.py: 10 pass; the 4
+    new ones fail on the pre-refinement code.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit 4b98179f50f38d83d8be91fb93335d484426f5c8
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Mon Aug 10 14:49:25 2026 -0400
+
+    privleapd: fix two defects the rework left (daemon-death race, accept busy-spin)
+
+    The upstream rework fixes the central accept-under-lock hang, but two defects
+    the earlier work had addressed were not carried over:
+
+    1. Socket-destroy race -> permanent daemon death. main_loop() runs
+       epoll_obj.poll() without socket_list_lock, then dispatches under the lock; a
+       control thread can remove and close a socket in that window, leaving a stale
+       readiness event for an fd no longer in socket_list. The old code treated that
+       as logging.critical + sys.exit(1) -- under systemd StartLimitBurst this
+       permanently prevents privleapd from restarting. A ready fd absent from
+       socket_list is an ordinary race: log at debug and skip it.
+
+    2. fd-exhaustion accept busy-spin + false-healthy watchdog. On EMFILE/ENFILE/
+       ENOBUFS/ENOMEM the pending connection stays in the backlog and, with a
+       level-triggered epoll and a non-blocking listen socket, keeps the fd
+       readable -- the loop spins a core at 100% CPU while still pinging WATCHDOG=1
+       every iteration, so systemd sees a pegged, non-serving process as healthy.
+       Classify accept errors; on a transient resource error back off 0.1s (outside
+       socket_list_lock) and withhold the watchdog ping so systemd restarts the
+       daemon. Healthy, idle and connection-change iterations still ping.
+
+    Regression tests in tests/test_daemon_defects.py drive main_loop() with a
+    stubbed epoll + sd-notifier: they fail on the pre-fix daemon (SystemExit(1) for
+    defect 1; WATCHDOG pinged during EMFILE for defect 2) and pass with the fix.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit 7080f34820111aa7ca8c59a33163bec8f810c8b9
+Merge: 9ec6ded f9f0756
+Author: claude (dev182 e09ec5cf-4ebf-4e1b-88e5-55fbac6ef1d3) <noreply@anthropic.com>
+Date:   Mon Aug 10 14:48:29 2026 -0400
+
+    Merge fork master (upstream privleapd rework) into ai
+
+    The closed PR #7 work was superseded by ArrayBolt3's upstream rework; adopt
+    master's tree as the base so this branch carries only the follow-up fixes.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 
 commit f9f0756f337bc455d703489d53a04b14d29a8723
 Merge: 0d6addf 8be6f9a
@@ -33,6 +251,191 @@ Author: Aaron Rainbolt <arraybolt3@gmail.com>
 Date:   Wed Aug 5 00:02:31 2026 -0400
 
     Various bug and deadlock fixes, adapted from Claude Code
+
+commit 9ec6ded82d85dbda4f5cd353b1b3acabcb2da0d5
+Author: claude (dev157 c07d4d50-4d3c-4692-800f-729a20fb8324) <noreply@anthropic.com>
+Date:   Tue Aug 4 10:38:46 2026 -0400
+
+    fix two contract violations the property tests found
+
+    check_secure_file_permissions promises False rather than an exception for
+    a file it cannot examine, but caught only OSError. A NUL byte in the path
+    makes os.stat raise ValueError, which escaped -- the one class of
+    unexaminable path that took the caller down instead of failing closed.
+    Reached by a Hypothesis totality property, minimal counterexample '\x00'.
+
+    leaprun's end-of-options marker was not honoured for --test: every other
+    flag is gated on end_of_options, so 'leaprun -- --test' enabled the test
+    delay instead of running an action by that name. Not reachable as an
+    escalation, but it breaks the contract '--' exists to provide.
+
+    Neither is reachable from an untrusted caller today: config paths come
+    from a directory listing, which cannot contain a NUL, and --test only
+    adds a 10ms delay. Both are fixed where the promise is made rather than
+    where it currently happens not to matter.
+
+    Regression coverage is in dist-ai (privleap takes no new tests): the
+    property fails on the old code with '\x00', and client_test's
+    end-of-options case fails 3 assertions on the old argv loop.
+
+commit f7abc376b6a08a9d9c9769365947a51191a7695b
+Author: claude (dev157 c07d4d50-4d3c-4692-800f-729a20fb8324) <noreply@anthropic.com>
+Date:   Tue Aug 4 09:48:15 2026 -0400
+
+    ci: re-run against the corrected dist-ai suites
+
+    No privleap change. The previous run failed on two dist-ai test defects, both
+    now fixed there: the shim suite needed python3-pam (added in eab441a) and the
+    group-lockout test was decided by authorize_user's root shortcut, since CI
+    runs the suites as root.
+
+commit eab441a26d4f10c6fcbd31800a42e0c73c6f46fb
+Author: claude (dev157 c07d4d50-4d3c-4692-800f-729a20fb8324) <noreply@anthropic.com>
+Date:   Tue Aug 4 09:44:19 2026 -0400
+
+    ci: install python3-pam so the shim can be tested at all
+
+    shim.py imports PAM at module scope, so without python3-pam it dies at import
+    with exit 1 before reaching any of its argument validation. The new shim
+    suite then reported "expected 255, got 1" for every refusal -- a real failure,
+    but one that read like the shim using the wrong exit code rather than a
+    missing build dependency.
+
+commit 724b224fb2e419d2aa1b785b6170eecb57d817a0
+Author: claude (dev157 c07d4d50-4d3c-4692-800f-729a20fb8324) <noreply@anthropic.com>
+Date:   Tue Aug 4 09:39:54 2026 -0400
+
+    privleapd: fix what a fresh read of the finished code found
+
+    - Two comments described the architecture this branch REPLACED. Both said the
+      accepting thread pings the watchdog, so it cannot afford to park there. It
+      no longer does: only watchdog_loop pings, and the main thread refreshes the
+      heartbeat that thread reads. A park stalls the stamp, not a ping. Comments
+      that lie about concurrency are worse than none.
+    - sys.exit(2) on a mis-parsed control command cannot do what it intends.
+      Raised from the control thread it unwinds only that thread; SystemExit is a
+      BaseException so the loop's guard misses it, and threading's excepthook
+      discards it -- killing the control socket with no log line, which is
+      precisely the failure that guard was added to prevent. It returns instead.
+    - authorize_user resolved every GID from getgrouplist eagerly. That call
+      returns the primary GID whether or not a group entry exists for it, so an
+      account with a stale or unresolvable primary group raised KeyError and was
+      locked out of every group-authorized action. It fails closed, so it granted
+      nothing, but user_in_allowed_group already tolerated exactly this.
+    - A dropped notification that systemd is WAITING for was logged at debug,
+      under an INFO-level logger. systemd then times the unit out with no
+      explanation from privleapd. Only the optional ones stay quiet.
+
+commit 82fc51a6c7474dfda18ec46ef991245b1a664b38
+Author: claude (dev157 c07d4d50-4d3c-4692-800f-729a20fb8324) <noreply@anthropic.com>
+Date:   Tue Aug 4 08:10:25 2026 -0400
+
+    privleapd: tighten the comments to the repo's minimal style
+
+    agents/guidelines.md asks for minimal comments; the liveness fixes had added
+    93 lines of them. Compressed to 55, keeping only what a reader cannot derive
+    from the code -- chiefly the concurrency invariants (why a deadline rather
+    than a sleep, why the accept bound is opt-in, why the termination notice is
+    sticky), since those are what a later simplification would otherwise undo.
+
+    Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+commit 384b7885c3a3ef8fe720c63d26b38b6afdeec48b
+Author: claude (dev157 c07d4d50-4d3c-4692-800f-729a20fb8324) <noreply@anthropic.com>
+Date:   Tue Aug 4 07:05:36 2026 -0400
+
+    privleapd: take the accept backoff outside socket_list_lock
+
+    The backoff added for descriptor exhaustion slept inside main_loop's locked
+    dispatch block, so it held socket_list_lock for its whole duration. The
+    control thread blocks on that lock in socket_list_add_sync and
+    socket_list_stop_sync, so leapctl create and destroy stalled alongside the
+    accept -- a spin fixed by introducing a lock-held wait, which is the same
+    class of fault as the rest of this branch.
+
+    report_accept_failure now records a deadline instead of sleeping, and
+    main_loop honours it after releasing the lock.
+
+    Also from review:
+
+    - the bare BlockingIOError handler in notify_pipe_write says why it is empty
+    - its docstring no longer claims to handle a return value it never inspects;
+      the raw writes used here report a full pipe by returning None
+    - the sdnotify_object comment no longer says "main thread only", now that
+      sd_notify reads its socket from the watchdog thread
+
+commit 74afa9b6ce5b5e08e61489ae1d25d073af3c66f0
+Author: claude (dev157 c07d4d50-4d3c-4692-800f-729a20fb8324) <noreply@anthropic.com>
+Date:   Tue Aug 4 06:58:46 2026 -0400
+
+    privleapd: make the bounded accept opt-in
+
+    The bounded accept was applied to every listening socket, not just the
+    daemon's. The upstream test suite drives fake servers by creating a
+    PrivleapSocket, starting a client process, and then calling get_session() to
+    serve it -- a pattern that needs the accept to WAIT, since a fresh process
+    takes far longer to connect than any bound would allow. Dozens of those tests
+    would have broken.
+
+    - get_session() waits again by default; pass bounded=True for the bound.
+    - privleapd passes it at its two epoll-driven call sites, which is where the
+      bound is actually needed: that thread also pings the watchdog, so it cannot
+      afford to wait on a readiness event that has gone stale.
+    - STATUS=Fully started no longer insists on arriving. systemd does not wait
+      for it, so retrying for up to five seconds would hold the main thread after
+      READY=1 had already released dependent units.
+
+    Found by codex, which was over its usage limit until now; the other reviewers,
+    the full dist-ai suite and green CI all missed it, because the suite that
+    would have caught it does not run in that CI lane.
+
+commit 5e42ea51bf05a1fad36bf1bb4ee778f85d493cf7
+Author: claude (dev157 c07d4d50-4d3c-4692-800f-729a20fb8324) <noreply@anthropic.com>
+Date:   Tue Aug 4 05:28:29 2026 -0400
+
+    privleapd: fix the hangs that stop the daemon answering
+
+    - accept() on a listening socket is bounded, so a readiness event that has
+      gone stale can no longer park the main thread and stop its watchdog pings
+    - epoll registrations are tracked by socket object rather than by descriptor
+      number: the kernel hands a closed socket's number straight to the next
+      socket, so a destroy immediately followed by a create looked like no change
+      and left the new socket permanently unwatched
+    - the watchdog ping moved off the main loop onto its own thread at a quarter
+      of the deadline, gated on a main-loop heartbeat so a genuinely wedged
+      daemon is still caught; WatchdogSec raised to 30s for headroom
+    - the notification socket is non-blocking, so a systemd that has stopped
+      draining it cannot park the thread that proves this process is alive
+    - the control thread no longer dies on an unexpected request failure, which
+      used to leave privleapd serving comm sockets and reporting healthy while
+      every control request queued up unanswered
+    - one connection can no longer end the main thread
+    - the termination notice stays a sticky broadcast; closing it blinded the
+      sibling comm threads for the same account
+    - an output stream is unregistered at end-of-file, ending a busy loop that
+      burned a core whenever one stream closed before the other
+    - the authentication failure delay absorbs the time authentication took, so
+      the reply time no longer distinguishes a missing action from a forbidden
+      one
+    - an unmatched ready descriptor is a race to re-scan, not a fatal error
+    - an accept that fails for lack of file descriptors backs off. The refused
+      connection stays in the backlog, so the socket stays readable and the main
+      loop would spin on it: busy enough to keep its heartbeat advancing and the
+      watchdog reporting health, while answering nobody. Any client can cause
+      this by holding connections open to the descriptor limit
+    - a notification systemd is waiting on is retried rather than dropped. The
+      socket is non-blocking so a busy systemd cannot park the watchdog thread,
+      but Type=notify waits for READY=1 specifically and fails the start without
+      it
+    - a failed epoll registration asks for another attempt; nothing else would
+      have scheduled one, leaving that account's clients hanging for good
+    - the account lookup moved off the main thread's accept path
+    - a refused config no longer reports a blank complaint when the offending
+      header cannot be located
+    - the permission check returns False for a path it cannot stat instead of
+      raising
+
+    Tests live in dist-ai (usr/share/privleap-tests), not in this package.
 
 commit 0d6addfa0692cb0ddbf6da58de7b282124197a0a
 Merge: ece46e1 0a01f44
