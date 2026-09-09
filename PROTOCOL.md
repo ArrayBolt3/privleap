@@ -90,15 +90,15 @@ messages longer than this.
 `privleapd` understands the following messages passed via the `control` socket:
 
 * `CREATE` - Creates a communication socket for a specified user. Supports one
-  mandatory argument, the name of the user to make a communication socket for.
-  Does not include a binary blob. Must be sent as the first message in the
-  session.
+  mandatory argument, the name or UID of the user to make a communication
+  socket for. Does not include a binary blob. Must be sent as the first message
+  in the session.
   * For instance, to create a user socket for account `john`, the message
     `CREATE 1 john` would be sent by the client.
 * `DESTROY` - Destroys a communication socket for a specified user. Supports
-  one mandatory argument, the name of the user to destroy the communication
-  socket of. Does not include a binary blob. Must be sent as the first message
-  in the session.
+  one mandatory argument, the name or UID of the user to destroy the
+  communication socket of. Does not include a binary blob. Must be sent as the
+  first message in the session.
   * For instance, to destroy a user socket for account `john`, the
     message `DESTROY 1 john` would be sent by the client.
 * `RELOAD` - Reloads configuration data. Supports no arguments. Does not
@@ -147,8 +147,8 @@ used to send `CREATE 1 <username>`, while `leapctl --destroy <username>` can
 be used to send `DESTROY 1 <username>`.
 
 Communication sockets are stored under `/run/privleapd/comm`. Each
-communication socket is named after the user it is intended to be used by
-(i.e. `<username>`). It is owned by the user and group corresponding to that
+communication socket is named after the UID of the user it is intended to be
+used by (i.e. `1000`). It is owned by the user and group corresponding to that
 user, and uses permissions `0600`. This ensures that only the authorized user
 can communicate with `privleapd` over this socket, which in turn allows
 `privleapd` to identify which user is sending messages to it.

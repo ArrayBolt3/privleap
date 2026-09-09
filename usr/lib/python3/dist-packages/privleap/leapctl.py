@@ -1,6 +1,6 @@
 #!/usr/bin/python3 -su
 
-# Copyright (C) 2025 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+# Copyright (C) 2025 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 # See the file COPYING for copying conditions.
 
 # pylint: disable=broad-exception-caught,duplicate-code
@@ -15,6 +15,7 @@
 
 import sys
 import time
+import pwd
 from typing import NoReturn
 
 from .privleap import (
@@ -66,13 +67,13 @@ def print_usage() -> NoReturn:
         """leapctl <--create|--destroy> <user>
 leapctl --reload
 
-    --create : Specifies that leapctl should request a communication socket to
-               be created for the specified user account.
+     --create : Specifies that leapctl should request a communication socket to
+                be created for the specified user account.
     --destroy : Specifies that leapctl should request a communication socket
                 to be destroyed for the specified user account.
-    --reload : Instructs privleapd to reload configuration without restarting.
-    user : The username or UID of the user account to create or destroy a
-           communication socket for."""
+     --reload : Instructs privleapd to reload configuration without restarting.
+         user : The username or UID of the user account to create or destroy a
+                communication socket for."""
     )
     cleanup_and_exit(1)
 
@@ -92,7 +93,7 @@ def unexpected_msg_error(control_msg: PrivleapMsg) -> NoReturn:
     """
 
     print(
-        "ERROR: privleapd returned unexpected message as follows:",
+        "ERROR: privleapd returned an unexpected message as follows:",
         file=sys.stderr,
     )
     print(control_msg.serialize(), file=sys.stderr)
@@ -130,7 +131,7 @@ def start_control_session() -> None:
         generic_error("Could not connect to privleapd!")
 
 
-def handle_create_request(user_name: str) -> NoReturn:
+def handle_create_request(user_id: str) -> NoReturn:
     """
     Requests that privleapd create a socket for the specified user, and handles
     the response to the request.
@@ -140,7 +141,7 @@ def handle_create_request(user_name: str) -> NoReturn:
 
     try:
         LeapctlGlobal.control_session.send_msg(
-            PrivleapControlClientCreateMsg(user_name)
+            PrivleapControlClientCreateMsg(user_id)
         )
     except Exception:
         generic_error("Could not request privleapd to create a comm socket!")
@@ -150,36 +151,35 @@ def handle_create_request(user_name: str) -> NoReturn:
     except Exception:
         generic_error("privleapd didn't return a valid response!")
 
-    # noinspection PyUnboundLocalVariable
     if isinstance(control_msg, PrivleapControlServerOkMsg):
-        print(f"Comm socket created for account {repr(user_name)}.")
+        print(f"Comm socket created for account {repr(user_id)}.")
         cleanup_and_exit(0)
     elif isinstance(control_msg, PrivleapControlServerControlErrorMsg):
         generic_error(
             "privleapd encountered an error while creating a comm socket "
-            f"for account {repr(user_name)}!"
+            f"for account {repr(user_id)}!"
         )
     elif isinstance(control_msg, PrivleapControlServerDisallowedUserMsg):
         generic_error(
-            f"Account {repr(user_name)} is not permitted to have a comm socket!",
+            f"Account {repr(user_id)} is not permitted to have a comm socket!",
             2,
         )
     elif isinstance(
         control_msg, PrivleapControlServerExpectedDisallowedUserMsg
     ):
         print(
-            f"Account {repr(user_name)} is not permitted to have a comm "
+            f"Account {repr(user_id)} is not permitted to have a comm "
             "socket, as expected, ok."
         )
         cleanup_and_exit(0)
     elif isinstance(control_msg, PrivleapControlServerExistsMsg):
-        print(f"Comm socket already exists for account {repr(user_name)}.")
+        print(f"Comm socket already exists for account {repr(user_id)}.")
         cleanup_and_exit(0)
     else:
         unexpected_msg_error(control_msg)
 
 
-def handle_destroy_request(user_name: str) -> NoReturn:
+def handle_destroy_request(user_id: str) -> NoReturn:
     """
     Requests that privleapd destroy a socket for the specified user, and handles
     the response to the request.
@@ -190,7 +190,7 @@ def handle_destroy_request(user_name: str) -> NoReturn:
     try:
         # noinspection PyUnboundLocalVariable
         LeapctlGlobal.control_session.send_msg(
-            PrivleapControlClientDestroyMsg(user_name)
+            PrivleapControlClientDestroyMsg(user_id)
         )
     except Exception:
         generic_error("Could not request privleapd to destroy a comm socket!")
@@ -200,22 +200,19 @@ def handle_destroy_request(user_name: str) -> NoReturn:
     except Exception:
         generic_error("privleapd didn't return a valid response!")
 
-    # noinspection PyUnboundLocalVariable
     if isinstance(control_msg, PrivleapControlServerOkMsg):
-        print(f"Comm socket destroyed for account {repr(user_name)}.")
+        print(f"Comm socket destroyed for account {repr(user_id)}.")
         cleanup_and_exit(0)
     elif isinstance(control_msg, PrivleapControlServerControlErrorMsg):
         generic_error(
             "privleapd encountered an error while destroying a comm "
-            f"socket for account {repr(user_name)}!"
+            f"socket for account {repr(user_id)}!"
         )
     elif isinstance(control_msg, PrivleapControlServerNouserMsg):
-        print(f"Comm socket does not exist for account {repr(user_name)}.")
+        print(f"Comm socket does not exist for account {repr(user_id)}.")
         cleanup_and_exit(0)
     elif isinstance(control_msg, PrivleapControlServerPersistentUserMsg):
-        print(
-            f"Cannot destroy socket for persistent account {repr(user_name)}."
-        )
+        print(f"Cannot destroy socket for persistent account {repr(user_id)}.")
         # It is not an error to try to destroy a socket for a persistent user,
         # since this may legitimately happen if someone logs in as a user that
         # happens to be persistent in privleap's config, and then logs out.
@@ -259,36 +256,42 @@ def main() -> NoReturn:
         print_usage()
 
     control_action: str = sys.argv[1]
-    control_user: str | None = None
+    control_user_id: str | None = None
     if len(sys.argv) == 3:
-        control_user = sys.argv[2]
+        control_user_id = sys.argv[2]
 
     if control_action not in ("--create", "--destroy", "--reload"):
         print_usage()
-    if control_action == "--reload" and control_user is not None:
+    if control_action == "--reload" and control_user_id is not None:
         print_usage()
 
-    if control_user is not None:
-        orig_control_user = control_user
-        control_user = PrivleapCommon.normalize_user_id(control_user)
+    if control_user_id is not None:
+        control_user_struct: pwd.struct_passwd | None = (
+            PrivleapCommon.normalize_user_id(control_user_id)
+        )
         # Allow a username that doesn't exist to be passed when using --destroy,
         # so if a user is deleted before their comm socket is destroyed, the
-        # socket can be destroyed anyway.
-        if control_user is None:
+        # socket can be destroyed anyway. Note that this will only work if the
+        # deleted user's UID is passed, since there is no way to recover a
+        # deleted user's UID to correlate it to a UID.
+        if control_user_struct is None:
             if control_action != "--destroy":
-                generic_error("Specified user account does not exist.")
-            else:
-                control_user = orig_control_user
+                generic_error(
+                    f"Specified account {repr(control_user_id)} does "
+                    + "not exist."
+                )
+        else:
+            control_user_id = str(control_user_struct.pw_name)
 
     wait_for_control_socket()
     start_control_session()
 
     if control_action == "--create":
-        assert control_user is not None
-        handle_create_request(control_user)
+        assert control_user_id is not None
+        handle_create_request(control_user_id)
     elif control_action == "--destroy":
-        assert control_user is not None
-        handle_destroy_request(control_user)
+        assert control_user_id is not None
+        handle_destroy_request(control_user_id)
     else:
         handle_reload_request()
 

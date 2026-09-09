@@ -1,6 +1,6 @@
 #!/usr/bin/python3 -su
 
-# Copyright (C) 2025 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+# Copyright (C) 2025 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 # See the file COPYING for copying conditions.
 
 # pylint: disable=broad-exception-caught,duplicate-code
@@ -14,7 +14,6 @@
 """leaprun.py - privleap client for running actions."""
 
 import sys
-import getpass
 import select
 import os
 import pwd
@@ -63,7 +62,7 @@ class LeaprunGlobal:
     ) = None
     in_response_handler: bool = False
     terminate_session: bool = False
-    user_name: str = getpass.getuser()
+    user_uid: int = os.geteuid()
     comm_session: PrivleapSession | None = None
 
 
@@ -85,7 +84,7 @@ def print_auth_notice(
     to execute.
     """
 
-    calling_account = get_calling_account_str()
+    calling_account = f"'{pwd.getpwuid(LeaprunGlobal.user_uid).pw_name}' ({LeaprunGlobal.user_uid})"
 
     for signal_name in auth_signal_list:
         print(
@@ -108,7 +107,7 @@ def print_usage() -> NoReturn:
     print(
         """leaprun [-c|--check] <action_name1> [<action_name2> ...]
 
-    -c, --check  : Check if the current user is authorized to run an action.
+     -c, --check : Check if the current user is authorized to run an action.
     action_name1 : The name of the action leaprun should handle. leaprun will
                    send a signal to trigger the named action (or will ask
                    privleapd to check if the user can trigger the action).
@@ -151,6 +150,7 @@ def create_output_msg() -> None:
         ):
             generic_error(f"Signal name {repr(signal_name)} is invalid!")
 
+    # TODO: Consider refactoring to remove skip_signal_name_validate.
     if LeaprunGlobal.check_mode:
         LeaprunGlobal.output_msg = PrivleapCommClientAccessCheckMsg(
             LeaprunGlobal.signal_name_list, skip_signal_name_validate=True
@@ -170,7 +170,9 @@ def wait_for_comm_socket() -> None:
     ## Note: We use polling to detect the socket. See the comment in
     ## leapctl.py in function `wait_for_control_socket()` for rationale.
 
-    target_path: Path = Path(PrivleapCommon.comm_dir, LeaprunGlobal.user_name)
+    target_path: Path = Path(
+        PrivleapCommon.comm_dir, str(LeaprunGlobal.user_uid)
+    )
     for _ in range(50):
         if target_path.is_socket():
             return
@@ -183,16 +185,15 @@ def start_comm_session() -> None:
     """
 
     try:
-        # Yes, we are explicitly stating the user's username here. This is not
-        # to identify ourselves to the server, but rather to actually open the
-        # right socket. privleapd provides a different socket for each user,
-        # and sets each socket's permissions to only allow a user to open the
-        # socket assigned to them. The only socket we can connect to is the one
-        # matching our username, thus we pass the username so that we open a
-        # socket that we actually *can* open. This authenticates us as a
-        # side-effect, but the authentication is not dependent on us telling the
-        # truth, so there isn't a vulnerability here.
-        LeaprunGlobal.comm_session = PrivleapSession(LeaprunGlobal.user_name)
+        # Yes, we are explicitly stating the user's UID here. This is not to
+        # identify ourselves to the server, but rather to open the right
+        # socket. privleapd provides a different socket for each user, and sets
+        # each socket's permissions to only allow a user to open the socket
+        # assigned to them. The only socket we can connect to is the one
+        # matching our UID. This authenticates us as a side-effect, but the
+        # authentication is not dependent on us telling the truth, so there
+        # isn't a vulnerability here.
+        LeaprunGlobal.comm_session = PrivleapSession(LeaprunGlobal.user_uid)
     except Exception:
         generic_error("Could not connect to privleapd!")
 
@@ -204,13 +205,13 @@ def start_comm_session() -> None:
 
 def send_output_msg() -> None:
     """
-    Sends a signal to the server using the open comm session.
+    Sends a signal or access check request to the server using the open comm
+    session.
     """
 
     assert LeaprunGlobal.comm_session is not None
     assert LeaprunGlobal.output_msg is not None
     try:
-        # noinspection PyUnboundLocalVariable
         LeaprunGlobal.comm_session.send_msg(LeaprunGlobal.output_msg)
     except Exception:
         if LeaprunGlobal.check_mode:
@@ -242,15 +243,6 @@ def check_terminate_session() -> None:
             cleanup_and_exit(130)
         except Exception:
             generic_error("Could not send terminate message to privleapd!")
-
-
-def get_calling_account_str() -> str:
-    """
-    Returns a string indicating the username and UID of the calling account.
-    """
-
-    uid = os.geteuid()
-    return f"'{pwd.getpwuid(uid).pw_name}' ({uid})"
 
 
 # pylint: disable=too-many-branches, too-many-statements

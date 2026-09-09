@@ -59,7 +59,7 @@ The following headers are recognized:
   times. If the specified user does not exist, the user is skipped over.
 
   `Group`: Specifies a user group to mark as "allowed". All users who are a
-  member of the specified group will be marked as "allowed". This key may
+  member of the specified group will be considered "allowed". This key may
   appear multiple times in the section. The same group can be specified
   multiple times. If the specified group does not exist, the group is skipped
   over.
@@ -161,4 +161,4 @@ users:
 https://github.com/Kicksecure/privleap
 
 ## AUTHOR
-This man page has been written by Aaron Rainbolt (arraybolt3@ubuntu.com).
+This man page has been written by Aaron Rainbolt (arraybolt3@gmail.com).

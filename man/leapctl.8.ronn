@@ -7,12 +7,13 @@ leapctl(8) -- Administrative utility for privleap
 -->
 
 ## SYNOPSIS
-`leapctl (--create|--destroy) username|uid`
+`leapctl (--create|--destroy|--reload) [username|uid]`
 
 ## DESCRIPTION
-Provides administrative controls for privleap. Right now this is only used to
-open and close sockets used to allow individual user accounts to communicate
-with the privleapd server.
+Provides administrative controls for privleap. This is used to open and close
+sockets used to allow individual user accounts to communicate with the
+privleapd server. It can also tell privleapd to dynamically reload its
+configuration.
 
 You usually will not need to run this directly - if `privleap` was installed
 from your distribution's repository, it should be pre-configured to create and
@@ -29,6 +30,9 @@ destroy user communication sockets on user login and logout.
   Instructs privleapd to destroy a communication socket for the specified
   user. This will prevent the user from communicating with privleapd any
   further.
+
+* `--reload` :
+  Instructs privleapd to reload its configuration files without restarting.
 
 ## ENVIRONMENT VARIABLES
 None.
@@ -62,4 +66,4 @@ leapctl as root for it to work.
 https://github.com/Kicksecure/privleap
 
 ## AUTHOR
-This man page has been written by Aaron Rainbolt (arraybolt3@ubuntu.com).
+This man page has been written by Aaron Rainbolt (arraybolt3@gmail.com).

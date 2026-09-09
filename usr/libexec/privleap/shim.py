@@ -1,6 +1,6 @@
 #!/usr/bin/python3 -su
 
-# Copyright (C) 2025 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+# Copyright (C) 2025 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 # See the file COPYING for copying conditions.
 
 # pylint: disable=broad-exception-caught, invalid-name
@@ -53,16 +53,19 @@ signal.signal(signal.SIGTERM, signal_handler)
 if len(sys.argv) < 5:
     sys.exit(255)
 
-calling_user: str = sys.argv[1]
-target_user: str = sys.argv[2]
-target_group: str = sys.argv[3]
+calling_user_uid_str: str = sys.argv[1]
+target_user_uid_str: str = sys.argv[2]
+target_group_gid_str: str = sys.argv[3]
 init_umask: str = sys.argv[4]
 command_arr: list[str] = sys.argv[5:]
 
 try:
-    target_user_info: pwd.struct_passwd = pwd.getpwnam(target_user)
-    _: Any = pwd.getpwnam(target_user)
-    _ = grp.getgrnam(target_group)
+    calling_user_uid: int = int(calling_user_uid_str)
+    target_user_uid: int = int(target_user_uid_str)
+    target_group_gid = int(target_group_gid_str)
+    calling_user_info: pwd.struct_passwd = pwd.getpwuid(calling_user_uid)
+    target_user_info: pwd.struct_passwd = pwd.getpwuid(target_user_uid)
+    target_group_info = grp.getgrgid(target_group_gid)
 except Exception:
     sys.exit(255)
 
@@ -79,8 +82,8 @@ os.umask(init_umask_int)
 
 pam_obj: Any = PAM.pam()
 pam_obj.start("privleapd")
-pam_obj.set_item(PAM.PAM_USER, calling_user)
-pam_obj.set_item(PAM.PAM_RUSER, calling_user)
+pam_obj.set_item(PAM.PAM_USER, calling_user_info.pw_name)
+pam_obj.set_item(PAM.PAM_RUSER, calling_user_info.pw_name)
 try:
     pam_obj.acct_mgmt()
 except PAM.error as e:
@@ -88,7 +91,7 @@ except PAM.error as e:
         pass
     else:
         sys.exit(255)
-pam_obj.set_item(PAM.PAM_USER, target_user)
+pam_obj.set_item(PAM.PAM_USER, target_user_info.pw_name)
 pam_obj.setcred(PAM.PAM_REINITIALIZE_CRED)
 try:
     pam_obj.open_session()
@@ -127,8 +130,8 @@ try:
     run_process = subprocess.Popen(
         command_arr,
         stdin=subprocess.DEVNULL,
-        user=target_user,
-        group=target_group,
+        user=target_user_uid,
+        group=target_group_gid,
         extra_groups=[],
         env=action_env,
         cwd=target_cwd,

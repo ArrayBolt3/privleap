@@ -1,6 +1,6 @@
 #!/usr/bin/python3 -su
 
-## Copyright (C) 2025 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## Copyright (C) 2025 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
 
 # pylint: disable=broad-exception-caught,global-statement,too-many-lines
@@ -16,7 +16,7 @@ unit testing would not exercise the code sufficiently. This runs through a wide
 variety of real-world-like tests to ensure all components of privleap behave
 as expected. This should be run using an autopkgtest.
 
-WARNING: Do not run these tests directly, they may damage the system they are
+WARNING: Do not run these tests directly, they will damage the system they are
 run on! Use run_autopkgtest instead to run them in an temporary, isolated
 environment.
 """
@@ -30,6 +30,7 @@ import socket
 import time
 import signal
 import select
+import pwd
 from threading import Thread
 import re
 from pathlib import Path
@@ -56,6 +57,7 @@ from privleap.privleap import (
     PrivleapControlServerExpectedDisallowedUserMsg,
     PrivleapControlServerNouserMsg,
     PrivleapControlServerOkMsg,
+    PrivleapControlServerPersistentUserMsg,
     PrivleapMsg,
     PrivleapSession,
     PrivleapSocket,
@@ -66,14 +68,12 @@ from .run_test_util import (
     assert_command_result,
     compare_privleapd_stderr,
     discard_privleapd_stderr,
-    displace_old_privleap_config,
+    erase_old_privleap_config,
     ensure_running_as_root,
     PlTestData,
     PlTestGlobal,
-    restore_old_privleap_config,
     setup_test_account,
     socket_send_raw_bytes,
-    start_privleapd_service,
     start_privleapd_subprocess,
     stop_privleapd_service,
     stop_privleapd_subprocess,
@@ -348,7 +348,13 @@ def run_leapctl_tests() -> None:
     )
     leapctl_assert_function(
         test_if_path_exists,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "_apt")),
+        str(
+            Path(
+                PlTestGlobal.privleap_state_dir,
+                "comm",
+                str(pwd.getpwnam("_apt").pw_uid),
+            )
+        ),
         "Ensure _apt socket exists",
     )
     # ---
@@ -359,7 +365,13 @@ def run_leapctl_tests() -> None:
     )
     leapctl_assert_function(
         test_if_path_not_exists,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "_apt")),
+        str(
+            Path(
+                PlTestGlobal.privleap_state_dir,
+                "comm",
+                str(pwd.getpwnam("_apt").pw_uid),
+            )
+        ),
         "Ensure _apt socket does not exist",
     )
     # ---
@@ -374,7 +386,7 @@ def run_leapctl_tests() -> None:
             Path(
                 PlTestGlobal.privleap_state_dir,
                 "comm",
-                "privleaptestone",
+                str(pwd.getpwnam("privleaptestone").pw_uid),
             )
         ),
         "Ensure test user socket exists",
@@ -391,7 +403,7 @@ def run_leapctl_tests() -> None:
             Path(
                 PlTestGlobal.privleap_state_dir,
                 "comm",
-                "privleaptestone",
+                str(pwd.getpwnam("privleaptestone").pw_uid),
             )
         ),
         "Ensure test user socket does not exist",
@@ -429,7 +441,7 @@ def run_leapctl_tests() -> None:
     # ---
     leapctl_assert_function(
         make_blocker_socket,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "root")),
+        str(Path(PlTestGlobal.privleap_state_dir, "comm", "0")),
         "Create blocker socket for account 'root'",
     )
     leapctl_assert_command(
@@ -439,7 +451,7 @@ def run_leapctl_tests() -> None:
     )
     leapctl_assert_function(
         try_remove_file,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "root")),
+        str(Path(PlTestGlobal.privleap_state_dir, "comm", "0")),
         "Remove blocker socket for account 'root'",
     )
     # ---
@@ -472,7 +484,7 @@ def run_leapctl_tests() -> None:
     )
     leapctl_assert_function(
         try_remove_file,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "root")),
+        str(Path(PlTestGlobal.privleap_state_dir, "comm", "0")),
         "Remove active socket for account root",
     )
     leapctl_assert_command(
@@ -499,15 +511,21 @@ def run_leapctl_tests() -> None:
         exit_code=0,
         stdout_data=PlTestData.deleteme_socket_created,
     )
+    deleteme_uid: int = pwd.getpwnam("deleteme").pw_uid
+    deleteme_destroy_stdout: bytes = (
+        PlTestData.deleteme_socket_destroyed.replace(
+            b"XXX_DELETEME_UID_XXX", bytes(str(deleteme_uid), encoding="utf-8")
+        )
+    )
     leapctl_assert_function(
         leapctl_delete_deleteme_user,
         "",
         "Delete user for deleted user socket destroy test",
     )
     leapctl_assert_command(
-        ["leapctl", "--destroy", "deleteme"],
+        ["leapctl", "--destroy", str(deleteme_uid)],
         exit_code=0,
-        stdout_data=PlTestData.deleteme_socket_destroyed,
+        stdout_data=deleteme_destroy_stdout,
     )
     # ---
     leapctl_assert_command(
@@ -623,7 +641,7 @@ def leaprun_helper_setup_fake_server(user_name: str) -> PrivleapSocket:
     init_fake_server_dirs()
     comm_socket: PrivleapSocket = PrivleapSocket(
         PrivleapSocketType.COMMUNICATION,
-        user_name=user_name,
+        user_id=user_name,
     )
     return comm_socket
 
@@ -641,11 +659,12 @@ def leaprun_helper_teardown_fake_server(
     assert comm_socket.backend_socket is not None
     comm_socket.backend_socket.shutdown(socket.SHUT_RDWR)
     comm_socket.backend_socket.close()
+    user_uid: int = pwd.getpwnam(user_name).pw_uid
     os.unlink(
         Path(
             PlTestGlobal.privleap_state_dir,
             "comm",
-            user_name,
+            str(user_uid),
         )
     )
 
@@ -2422,8 +2441,11 @@ def privleapd_check_persistent_users_test(bogus: str) -> bool:
     # it difficult to store the list of persistent users in a central location
     # that everything else uses.
     persistent_user_list: list[str] = ["sys", "bin", "uucp", "messagebus"]
-    for user in persistent_user_list:
-        if not Path("/run/privleapd/comm", user).exists():
+    persistent_uid_list: list[int] = [
+        pwd.getpwnam(x).pw_uid for x in persistent_user_list
+    ]
+    for uid in persistent_uid_list:
+        if not Path("/run/privleapd/comm", str(uid)).exists():
             return False
     return True
 
@@ -2561,7 +2583,36 @@ def privleapd_create_invalid_user_socket_and_bail_test(bogus: str) -> bool:
 def privleapd_destroy_invalid_user_socket_test(bogus: str) -> bool:
     """
     Test how privleapd handles a control client that requests a socket to be
-    destroyed for a user that does not exist.
+    destroyed for a UID that does not exist.
+    """
+
+    if bogus != "":
+        return False
+    discard_privleapd_stderr()
+    assert_success: bool = True
+    control_session: PrivleapSession = PrivleapSession(is_control_session=True)
+    ## Must pass a UID here, otherwise we get a different error message that we
+    ## test for separately
+    control_session.send_msg(PrivleapControlClientDestroyMsg("12345"))
+    control_server_msg: PrivleapMsg = control_session.get_msg()
+    control_session.close_session()
+    if not isinstance(control_server_msg, PrivleapControlServerNouserMsg):
+        logging.error(
+            "privleapd returned unexpected message type: %s",
+            type(control_server_msg),
+        )
+        assert_success = False
+    if not compare_privleapd_stderr(
+        PlTestData.destroy_invalid_user_socket_lines
+    ):
+        assert_success = False
+    return assert_success
+
+
+def privleapd_destroy_nonexistent_user_test(bogus: str) -> bool:
+    """
+    Test how privleapd handles a control client that requests a socket to be
+    deleted for a username that does not exist.
     """
 
     if bogus != "":
@@ -2578,9 +2629,7 @@ def privleapd_destroy_invalid_user_socket_test(bogus: str) -> bool:
             type(control_server_msg),
         )
         assert_success = False
-    if not compare_privleapd_stderr(
-        PlTestData.destroy_invalid_user_socket_lines
-    ):
+    if not compare_privleapd_stderr(PlTestData.destroy_nonexistent_user_lines):
         assert_success = False
     return assert_success
 
@@ -2700,6 +2749,33 @@ def privleapd_create_blocked_user_socket_and_bail_test(bogus: str) -> bool:
     return False
 
 
+def privleapd_destroy_persistent_user_test(bogus: str) -> bool:
+    """
+    Test how privleapd handles a control client that requests a socket to be
+    destroyed for a persistent user.
+    """
+
+    if bogus != "":
+        return False
+    discard_privleapd_stderr()
+    assert_success: bool = True
+    control_session: PrivleapSession = PrivleapSession(is_control_session=True)
+    control_session.send_msg(PrivleapControlClientDestroyMsg("uucp"))
+    control_server_msg: PrivleapMsg = control_session.get_msg()
+    control_session.close_session()
+    if not isinstance(
+        control_server_msg, PrivleapControlServerPersistentUserMsg
+    ):
+        logging.error(
+            "privleapd returned unexpected message type: %s",
+            type(control_server_msg),
+        )
+        assert_success = False
+    if not compare_privleapd_stderr(PlTestData.destroy_persistent_user_lines):
+        assert_success = False
+    return assert_success
+
+
 def privleapd_destroy_missing_user_socket_test(bogus: str) -> bool:
     """
     Test how privleapd handles a control client that requests a socket to be
@@ -2710,12 +2786,13 @@ def privleapd_destroy_missing_user_socket_test(bogus: str) -> bool:
         return False
     discard_privleapd_stderr()
     assert_success: bool = True
+    privleaptestone_uid_str: str = str(pwd.getpwnam("privleaptestone").pw_uid)
     try:
         os.unlink(
             Path(
                 PlTestGlobal.privleap_state_dir,
                 "comm",
-                "privleaptestone",
+                privleaptestone_uid_str,
             )
         )
     except Exception:
@@ -2730,9 +2807,13 @@ def privleapd_destroy_missing_user_socket_test(bogus: str) -> bool:
             type(control_server_msg),
         )
         assert_success = False
-    if not compare_privleapd_stderr(
+    destroy_missing_user_socket_lines: list[str] = (
         PlTestData.destroy_missing_user_socket_lines
-    ):
+    )
+    destroy_missing_user_socket_lines[0] = destroy_missing_user_socket_lines[
+        0
+    ].replace("XXX_PRIVLEAPTESTONE_UID_XXX", privleaptestone_uid_str)
+    if not compare_privleapd_stderr(destroy_missing_user_socket_lines):
         assert_success = False
     return assert_success
 
@@ -4013,7 +4094,13 @@ def run_privleapd_tests() -> None:
     privleapd_assert_function(
         privleapd_destroy_invalid_user_socket_test,
         "",
-        "Test privleapd socket destroy request for nonexistent user",
+        "Test privleapd socket destroy request for nonexistent UID",
+    )
+    # ---
+    privleapd_assert_function(
+        privleapd_destroy_nonexistent_user_test,
+        "",
+        "Test privleapd socket destroy request for nonexistent username",
     )
     # ---
     privleapd_assert_function(
@@ -4040,7 +4127,7 @@ def run_privleapd_tests() -> None:
             Path(
                 PlTestGlobal.privleap_state_dir,
                 "comm",
-                "privleaptestone",
+                str(pwd.getpwnam("privleaptestone").pw_uid),
             )
         ),
         "Make blocker socket for user privleaptestone",
@@ -4063,10 +4150,16 @@ def run_privleapd_tests() -> None:
             Path(
                 PlTestGlobal.privleap_state_dir,
                 "comm",
-                "privleaptestone",
+                str(pwd.getpwnam("privleaptestone").pw_uid),
             )
         ),
         "Remove blocker socket for user privleaptestone",
+    )
+    # ---
+    privleapd_assert_function(
+        privleapd_destroy_persistent_user_test,
+        "",
+        "Test privleapd socket destroy request for persistent user",
     )
     # ---
     privleapd_assert_command(
@@ -4387,7 +4480,13 @@ def run_privleapd_tests() -> None:
     )
     privleapd_assert_function(
         test_if_path_not_exists,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "privleaptesttwo")),
+        str(
+            Path(
+                PlTestGlobal.privleap_state_dir,
+                "comm",
+                str(pwd.getpwnam("privleaptesttwo").pw_uid),
+            )
+        ),
         "Test privleaptesttwo socket no longer exists",
     )
     privleapd_assert_command(
@@ -4433,12 +4532,24 @@ def run_privleapd_tests() -> None:
     )
     privleapd_assert_function(
         test_if_path_not_exists,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "privleaptesttwo")),
+        str(
+            Path(
+                PlTestGlobal.privleap_state_dir,
+                "comm",
+                str(pwd.getpwnam("privleaptesttwo").pw_uid),
+            )
+        ),
         "Test privleaptesttwo socket no longer exists",
     )
     privleapd_assert_function(
         test_if_path_not_exists,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "privleaptestthree")),
+        str(
+            Path(
+                PlTestGlobal.privleap_state_dir,
+                "comm",
+                str(pwd.getpwnam("privleaptestthree").pw_uid),
+            )
+        ),
         "Test privleaptestthree socket no longer exists",
     )
     # We don't add privleap group membership back to the #2 and #3 accounts
@@ -4456,12 +4567,24 @@ def run_privleapd_tests() -> None:
     )
     privleapd_assert_function(
         test_if_path_exists,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "privleaptesttwo")),
+        str(
+            Path(
+                PlTestGlobal.privleap_state_dir,
+                "comm",
+                str(pwd.getpwnam("privleaptesttwo").pw_uid),
+            )
+        ),
         "Ensure privleaptesttwo user socket exists",
     )
     privleapd_assert_function(
         test_if_path_exists,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "privleaptestthree")),
+        str(
+            Path(
+                PlTestGlobal.privleap_state_dir,
+                "comm",
+                str(pwd.getpwnam("privleaptestthree").pw_uid),
+            )
+        ),
         "Ensure privleaptestthree user socket exists",
     )
     privleapd_assert_function(
@@ -4476,12 +4599,24 @@ def run_privleapd_tests() -> None:
     )
     privleapd_assert_function(
         test_if_path_not_exists,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "privleaptesttwo")),
+        str(
+            Path(
+                PlTestGlobal.privleap_state_dir,
+                "comm",
+                str(pwd.getpwnam("privleaptesttwo").pw_uid),
+            )
+        ),
         "Test privleaptesttwo socket no longer exists",
     )
     privleapd_assert_function(
         test_if_path_not_exists,
-        str(Path(PlTestGlobal.privleap_state_dir, "comm", "privleaptestthree")),
+        str(
+            Path(
+                PlTestGlobal.privleap_state_dir,
+                "comm",
+                str(pwd.getpwnam("privleaptestthree").pw_uid),
+            )
+        ),
         "Test privleaptestthree socket no longer exists",
     )
     privleapd_assert_command(
@@ -4710,16 +4845,14 @@ def main() -> NoReturn:
         setup_test_account(
             setup_account_name, Path(f"/home/{setup_account_name}")
         )
-    displace_old_privleap_config()
+    erase_old_privleap_config()
     write_privleap_test_config()
 
     run_leapctl_tests()
     run_leaprun_tests()
     run_privleapd_tests()
 
-    restore_old_privleap_config()
     stop_privleapd_subprocess()
-    start_privleapd_service()
     print_result_summary()
     if PlTestGlobal.all_asserts_passed:
         sys.exit(0)

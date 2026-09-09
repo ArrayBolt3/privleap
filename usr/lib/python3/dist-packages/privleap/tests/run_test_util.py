@@ -1,6 +1,6 @@
 #!/usr/bin/python3 -su
 
-## Copyright (C) 2025 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## Copyright (C) 2025 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
 
 # pylint: disable=broad-exception-caught,too-few-public-methods,too-many-lines
@@ -39,9 +39,6 @@ class PlTestGlobal:
     privleap_conf_dir: Path = Path(f"{privleap_conf_base_dir}/conf.d")
     privleap_system_local_conf_dir: Path = Path(
         "/usr/local/etc/privleap/conf.d"
-    )
-    privleap_conf_backup_dir: Path = Path(
-        f"{privleap_conf_base_dir}/conf.d.bak"
     )
     privleapd_proc: subprocess.Popen[str] | None = None
     privleapd_test_ready_file: Path = Path("/tmp/privleapd-ready-for-test")
@@ -108,7 +105,7 @@ def proc_try_readline(
 def ensure_running_as_root() -> None:
     """
     Ensures the test is running as root. The tests cannot function when
-    running as a user as they have to execute commands as root.
+    running as a standard user as they have to execute commands as root.
     """
 
     if os.geteuid() != 0:
@@ -178,51 +175,24 @@ def setup_test_account(test_username: str, test_home_dir: Path) -> None:
         shutil.chown(test_home_dir, user=test_username, group=test_username)
 
 
-def displace_old_privleap_config() -> None:
+def erase_old_privleap_config() -> None:
     """
-    Moves the existing privleap configuration dir to a backup location so we can
-    put custom config in for testing purposes.
-
-    NOTE: This does **NOT** displace /usr/local/etc/privleap/conf.d. This
-    directory is not expected to exist in a testing environment.
+    Wipes the existing privleap configuration dirs and creates new empty ones.
     """
 
-    if PlTestGlobal.privleap_conf_backup_dir.exists():
-        logging.critical(
-            "Backup config dir at '%s' exist, please move or remove it before "
-            "continuing.",
-            str(PlTestGlobal.privleap_conf_backup_dir),
-        )
-        sys.exit(1)
-    ensure_path_lacks_files(PlTestGlobal.privleap_conf_dir)
-    ensure_path_lacks_files(PlTestGlobal.privleap_conf_backup_dir)
-    PlTestGlobal.privleap_conf_base_dir.mkdir(parents=True, exist_ok=True)
-    if PlTestGlobal.privleap_conf_dir.exists():
-        shutil.move(
-            PlTestGlobal.privleap_conf_dir,
-            PlTestGlobal.privleap_conf_backup_dir,
-        )
-    PlTestGlobal.privleap_conf_dir.mkdir(parents=True, exist_ok=True)
+    ## This dir should always exist. If we can't remove it, that's an error.
+    shutil.rmtree(PlTestGlobal.privleap_conf_dir)
 
+    ## This dir probably won't exist yet though.
+    try:
+        shutil.rmtree(PlTestGlobal.privleap_system_local_conf_dir)
+    except FileNotFoundError:
+        pass
 
-def restore_old_privleap_config() -> None:
-    """
-    Moves the backup privleap configuration dir back to the original location.
-    """
-
-    ensure_path_lacks_files(PlTestGlobal.privleap_conf_dir)
-    ensure_path_lacks_files(PlTestGlobal.privleap_conf_backup_dir)
-    PlTestGlobal.privleap_conf_base_dir.mkdir(parents=True, exist_ok=True)
-    if PlTestGlobal.privleap_conf_backup_dir.exists():
-        if PlTestGlobal.privleap_conf_dir.exists():
-            shutil.rmtree(PlTestGlobal.privleap_conf_dir)
-        shutil.move(
-            PlTestGlobal.privleap_conf_backup_dir,
-            PlTestGlobal.privleap_conf_dir,
-        )
-    # Make sure the "real" config dir exists even if there wasn't a backup dir
-    # to move into position
-    PlTestGlobal.privleap_conf_dir.mkdir(parents=True, exist_ok=True)
+    PlTestGlobal.privleap_conf_dir.mkdir(parents=True, exist_ok=False)
+    PlTestGlobal.privleap_system_local_conf_dir.mkdir(
+        parents=True, exist_ok=False
+    )
 
 
 def stop_privleapd_service() -> None:
@@ -508,21 +478,6 @@ def discard_privleapd_stderr() -> None:
                 break
 
 
-def start_privleapd_service() -> None:
-    """
-    Starts the privleapd service. This should only be called once all testing is
-    done.
-    """
-
-    if PlTestGlobal.no_service_handling:
-        return
-    try:
-        subprocess.run(["systemctl", "start", "privleapd"], check=True)
-    except Exception as e:
-        logging.critical("Could not start privleapd service!", exc_info=e)
-        sys.exit(1)
-
-
 def socket_send_raw_bytes(sock: socket.socket, buf: bytes) -> bool:
     """
     Sends a buffer of bytes through a socket, coping with partial sends
@@ -787,7 +742,7 @@ User=privleaptestthree
         + b"before sending all output!\n"
     )
     specified_user_missing: bytes = (
-        b"ERROR: Specified user account does not exist.\n"
+        b"ERROR: Specified account 'nonexistent' does not exist.\n"
     )
     nonexistent_socket_missing: bytes = (
         b"Comm socket does not exist for account 'nonexistent'.\n"
@@ -830,7 +785,7 @@ User=privleaptestthree
         b"Comm socket created for account 'deleteme'.\n"
     )
     deleteme_socket_destroyed: bytes = (
-        b"Comm socket destroyed for account 'deleteme'.\n"
+        b"Comm socket destroyed for account 'XXX_DELETEME_UID_XXX'.\n"
     )
     man_socket_not_permitted: bytes = (
         b"ERROR: Account 'man' is not permitted to have a comm socket!\n"
@@ -859,21 +814,22 @@ User=privleaptestthree
         b"leapctl <--create|--destroy> <user>\n"
         + b"leapctl --reload\n"
         + b"\n"
-        + b"    --create : Specifies that leapctl should request a communication "
+        + b"     --create : Specifies that leapctl should request a communication "
         + b"socket to\n"
-        + b"               be created for the specified user account.\n"
+        + b"                be created for the specified user account.\n"
         + b"    --destroy : Specifies that leapctl should request a communication "
         + b"socket\n"
         + b"                to be destroyed for the specified user account.\n"
-        + b"    --reload : Instructs privleapd to reload configuration without "
+        + b"     --reload : Instructs privleapd to reload configuration without "
         + b"restarting.\n"
-        + b"    user : The username or UID of the user account to create or destroy a\n"
-        + b"           communication socket for.\n"
+        + b"         user : The username or UID of the user account to create "
+        + b"or destroy a\n"
+        + b"                communication socket for.\n"
     )
     leaprun_help: bytes = (
         b"leaprun [-c|--check] <action_name1> [<action_name2> ...]\n"
         + b"\n"
-        + b"    -c, --check  : Check if the current user is authorized to "
+        + b"     -c, --check : Check if the current user is authorized to "
         + b"run an action.\n"
         + b"    action_name1 : The name of the action leaprun should handle. "
         + b"leaprun will\n"
@@ -1094,7 +1050,14 @@ User=privleaptestthree
     ]
     destroy_invalid_user_socket_lines: list[str] = [
         "destroy_comm_socket: INFO: Could not destroy comm socket for account "
-        + "'nonexistent', account has no comm socket open\n",
+        + "'12345', account has no comm socket open\n",
+        "handle_control_destroy_msg: INFO: Handled DESTROY message for account "
+        + "'12345', socket did not exist\n",
+    ]
+    destroy_nonexistent_user_lines: list[str] = [
+        "destroy_comm_socket: WARNING: Could not destroy comm socket for "
+        + "account 'nonexistent', account does not exist and its original UID "
+        + "was not given\n",
         "handle_control_destroy_msg: INFO: Handled DESTROY message for account "
         + "'nonexistent', socket did not exist\n",
     ]
@@ -1128,10 +1091,16 @@ User=privleaptestthree
         "Traceback (most recent call last):\n",
         "BrokenPipeError: [Errno 32] Broken pipe\n",
     ]
+    destroy_persistent_user_lines: list[str] = [
+        "destroy_comm_socket: INFO: Refusing to destroy comm socket for "
+        + "persistent account 'uucp'\n",
+        "handle_control_destroy_msg: INFO: Handled DESTROY message for "
+        + "account 'uucp', account is persistent, so socket not destroyed\n",
+    ]
     destroy_missing_user_socket_lines: list[str] = [
         "destroy_comm_socket: WARNING: Destroying comm socket for account "
         + "'privleaptestone', no UNIX socket to delete at "
-        + "'/run/privleapd/comm/privleaptestone'\n",
+        + "'/run/privleapd/comm/XXX_PRIVLEAPTESTONE_UID_XXX'\n",
         "destroy_comm_socket: INFO: Successfully destroyed comm socket for "
         + "account 'privleaptestone'\n",
         "handle_control_destroy_msg: INFO: Handled DESTROY message for account "
