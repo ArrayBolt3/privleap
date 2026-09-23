@@ -1,9 +1,258 @@
+commit ecf14a5577ab1a4f97e0aac4877479199ae400bb
+Merge: ae1e3bf 88cb655
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Wed Sep 23 03:49:55 2026 -0400
+
+    Merge remote-tracking branch 'refs/remotes/ArrayBolt3/arraybolt3/trixie'
+
+commit 88cb655a48f0a19fbf4e3cdef67d044255168931
+Author: Aaron Rainbolt <arraybolt3@gmail.com>
+Date:   Tue Sep 22 15:00:41 2026 -0400
+
+    Polish
+
+commit 9aa2d3f121d705c3f1982651f9f1d58ec48f384e
+Merge: ae1e3bf 5be10ea
+Author: Aaron Rainbolt <arraybolt3@gmail.com>
+Date:   Mon Sep 21 23:49:48 2026 -0400
+
+    Merge branch 'ai' into arraybolt3/trixie
+
+commit 5be10ea509f79ef2e1aaed2d38213022fa4bb1da
+Author: claude (dev618 cec5beeb-a999-4ee1-af89-39473b56f3f7) <noreply@anthropic.com>
+Date:   Mon Sep 21 08:22:14 2026 -0400
+
+    Give dist-ai-fuzz job timeout headroom for per-suite caps
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit 14fa1ddcab4d407d64984027abb66db6d2687041
+Author: claude (dev618 cec5beeb-a999-4ee1-af89-39473b56f3f7) <noreply@anthropic.com>
+Date:   Mon Sep 21 08:07:58 2026 -0400
+
+    Combine session-fuzz into dist-ai-fuzz (one lean fuzz lane)
+
+    - dist-ai-fuzz.yml now runs the WHOLE privleap --fuzz category (in-process
+      parser fuzz + live-daemon session fuzz) via dist-ai privleap-tests-fuzz-ci,
+      which provisions the runtime and drops to a non-root caller.
+    - Delete session-fuzz.yml (folded in) and the dm-consumer session-fuzz skip.
+    - Lean cadence: path-filtered PRs + daily cron, not every push.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit d635c9ed8c250a4310c82cb6da3d1d4d530fe1d8
+Author: claude (dev618 cec5beeb-a999-4ee1-af89-39473b56f3f7) <noreply@anthropic.com>
+Date:   Mon Sep 21 06:13:53 2026 -0400
+
+    Thin session-fuzz.yml onto dist-ai CI orchestrator
+
+    - Runtime deps + provisioning (setup, unprivileged caller, run) now
+      live in dist-ai privleap-tests-session-fuzz-ci; workflow is bootstrap
+      + two checkouts + one call.
+    - Drop dead python3-hypothesis/python3-pytest (session_fuzz uses neither).
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit fb6c25b851f462d55947f52b092ebc20d93bef5c
+Author: claude (dev618 cec5beeb-a999-4ee1-af89-39473b56f3f7) <noreply@anthropic.com>
+Date:   Mon Sep 21 05:47:34 2026 -0400
+
+    Grant actions: read to CFLite caller; fix budget wording
+
+    - Reusable now needs actions: read (corpus artifact download);
+      caller must grant it since reusable perms cannot exceed the caller.
+    - Drop unused security-events: write (no SARIF upload).
+    - fuzz_seconds is total, not per-fuzzer.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit 7c5863c2b67936cfa748ecb1e461e0ed9085af88
+Author: claude (dev618 cec5beeb-a999-4ee1-af89-39473b56f3f7) <noreply@anthropic.com>
+Date:   Mon Sep 21 05:20:54 2026 -0400
+
+    Thin local-python-fuzz.yml onto shared CFLite reusable
+
+    - Body (pr/batch split, google/clusterfuzzlite pins, step summary)
+      now lives in developer-meta-files reusable-clusterfuzzlite.yml;
+      wrapper keeps only triggers, paths, schedule, concurrency.
+    - Add dependabot.yml: session-fuzz.yml keeps direct action SHA pins
+      and .clusterfuzzlite/Dockerfile a FROM digest, both untracked
+      before (W-007).
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit ae1e3bfcd8198f01d1feaa5ca9b0de4b6840122e
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Sat Sep 19 14:07:49 2026 +0000
+
+    bumped changelog version
+
 commit 8d188bb3b8f4a98c4ae95804e23a460a443409e6
 Merge: 35c5a2d 443b7f3
 Author: Patrick Schleizer <adrelanos@whonix.org>
 Date:   Sat Sep 19 09:58:56 2026 -0400
 
     Merge remote-tracking branch 'refs/remotes/ArrayBolt3/arraybolt3/trixie'
+
+commit 95624b0696af82de00ad76350f75c1e1553c5906
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Sat Sep 19 03:49:08 2026 -0400
+
+    Trim session-fuzz skip comment to one line
+
+commit 0a9a647a2428f108583397d452d7423839195f32
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 19:23:59 2026 -0400
+
+    Tighten session-fuzz skip comment
+
+commit 6f98174417db341ca295886bce852eea085acfb1
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 19:17:58 2026 -0400
+
+    State the real session-fuzz skip reason: no live daemon
+
+    - the generic dist-ai lane skips it because it does not provision a live
+      privleapd (group, PAM policy, hardcoded-path shim), not because of caller
+      privilege; that setup + the run live in the dedicated session-fuzz.yml
+
+commit 3cb91e0d7b1bdb2467b207ee643eb0fb3bfab342
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 19:05:35 2026 -0400
+
+    Correct the session-fuzz skip rationale in dm-consumer
+
+    - disposable mode removed the unshare/mount-namespace barrier; the real reason
+      the generic dist-ai lane skips it is the unprivileged-caller + disposable-env
+      setup only the dedicated session-fuzz.yml workflow provides
+
+commit 4da53fd80b625d3b35bee23990b90a4e30056a24
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 18:29:09 2026 -0400
+
+    Run session fuzz in a NON-privileged container, per PR
+
+    - disposable mode (PRIVLEAP_TEST_DISPOSABLE_ENV=1) skips the mount namespace, so
+      --privileged is no longer needed: a plain debian:trixie container suffices.
+      Restore the per-PR trigger now that it is lightweight and non-privileged.
+
+commit 8f0373f1e37b8629baeb66181991746e9cdd6455
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 14:06:38 2026 -0400
+
+    Run the container session fuzz as an unprivileged user
+
+    - session_fuzz refuses to run as root (the daemon must attribute requests to an
+      unprivileged caller); the container is root, so create a normal user with
+      passwordless sudo and run the fuzzer as them -- the VM's runner+sudo shape
+
+commit 0298bc0424a849c667e56023a368e880ae565070
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 14:03:11 2026 -0400
+
+    Install adduser in the session-fuzz container
+
+    - the minimal debian:trixie image lacks addgroup (adduser package), which the
+      runtime setup needs to create the privleap system group
+
+commit 9082abbcce283398eaa6f91a22bcd231fac449b7
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 13:59:26 2026 -0400
+
+    Run session fuzz in a Trixie container, off the PR path
+
+    - privleap needs Python 3.13 AND python3-pam's `PAM` module built for it AND a
+      mount namespace; a plain VM (3.12) and the dist-ai container (no SYS_ADMIN)
+      each satisfy only one. Use a privileged debian:trixie container that has all
+      three, and run it on schedule/dispatch rather than gating every PR
+
+commit 759a083a797bb2d89d8d61b1a1833beab2ec400d
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 13:52:18 2026 -0400
+
+    Install privleap deps into the session-fuzz 3.13
+
+    - setup-python's 3.13 is isolated from apt's 3.12 packages; pip-install sdnotify
+      and pam into the 3.13 that runs the daemon (fixes ModuleNotFoundError sdnotify)
+
+commit 014f6bb35acee2fdb4a18aa936cf837841d7e4f7
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 13:48:22 2026 -0400
+
+    Run session fuzzer under Python 3.13
+
+    - privleapd uses 3.13-only APIs (Path.is_dir(follow_symlinks=)); the runner
+      defaults to 3.12 so the daemon crashed at startup. Trixie ships 3.13: install
+      it and repoint /usr/bin/python3 (the daemon's absolute shebang) at it
+
+commit 46f03784497b8c9fc7285fa042eda6e7b3867ba3
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 13:37:56 2026 -0400
+
+    Clone dist-ai in the CFLite Dockerfile, not the workflow
+
+    - the CFLite build context is the git tree, so a workspace checkout of dist-ai
+      never reached COPY; clone dist-ai@master (public) inside the Dockerfile so
+      build.sh finds the harnesses at $SRC/dist-ai
+
+commit 62ca017b831ce424c8b601e4ee1162a5f87f0d28
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 12:27:12 2026 -0400
+
+    Thin session-fuzz workflow: call dist-ai setup script
+
+commit ddc7f238d8a6a2acc2bcffa2df66a2ac5bc31769
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 12:25:56 2026 -0400
+
+    Source CFLite fuzz harnesses from dist-ai
+
+    - delete fuzz/: harnesses + corpus now live in dist-ai (single source), keeping
+      this upstream-destined package free of AI-assisted fuzz scaffolding
+    - build.sh compiles dist-ai's atheris harnesses; the Fuzz workflow checks dist-ai
+      out into .clusterfuzzlite/dist-ai so they land in the CFLite build context
+
+commit 118c120e865cc061cf62735a905f7ab383107256
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 11:25:10 2026 -0400
+
+    Run session fuzzer in CI on a VM runner
+
+    - stateful live-daemon fuzzer needs sudo + unshare --mount, which the dist-ai
+      container lane cannot provide; run it on ubuntu-latest with the privleap
+      runtime (group, PAM policy, shim bind target) set up, daemon from the checkout
+
+commit 9f36342c114cafeb86daed59321d0c9aba983882
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 11:14:22 2026 -0400
+
+    Add coverage-guided authorization fuzz harness
+
+    - fuzz_privleap_authz drives real normalize_*_id + authorize_user over fuzzed
+      user/group name lists and asserts the anti-ACE invariant (no grant without a
+      matching uid/group rule); canary-verified to catch a default-allow regression
+    - build.sh installs sdnotify (privleapd imports it)
+
+commit dad1920f724e21f5f19e9e9f6d99df0dbd5c8a03
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 02:42:35 2026 -0400
+
+    Harden parser fuzz harness against bare-UID setup
+
+    - comm-session ctor resolves os.getuid() via pwd; a run container under a
+      numeric UID with no passwd entry raised ValueError outside the harness's
+      except boundary, a false crash on ~half of inputs unrelated to the parser
+
+commit 3adee22928cf7fb77f8d5b4760953353e1c6d261
+Author: claude (dev601 a4709286-19b5-4207-9eab-4adbe71dc8d5) <noreply@anthropic.com>
+Date:   Fri Sep 18 02:05:26 2026 -0400
+
+    Add CFLite fuzzing with portable CPython 3.12
+
+    - base-builder-python ships 3.11, which cannot parse privleap's PEP 701
+      f-strings; a pinned, sha256-verified portable 3.12 first on PATH fixes it
+    - apt route is dead: deadsnakes focal index is empty, base OS has only 3.8
+    - proven end to end: both harnesses build + run coverage-guided, exit 0
 
 commit 443b7f3b8df6e1f4dc4627f4da7f3be05ef867c8
 Author: Aaron Rainbolt <arraybolt3@gmail.com>
