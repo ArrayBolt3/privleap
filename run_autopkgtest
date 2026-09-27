@@ -94,8 +94,6 @@ run_autopkgtest() {
     offer_package_install 'debian-archive-keyring'
   fi
   if ! [ -f '/usr/bin/newuidmap' ] || ! [ -f '/usr/bin/newgidmap' ]; then
-    ## Provided by 'uidmap', not by util-linux; the newuidmap/newgidmap checks
-    ## below stat these unconditionally, so ensure the package is present first.
     offer_package_install 'uidmap'
   fi
   if [ "$(basename "${privleap_project_dir}")" != 'privleap' ]; then
@@ -135,16 +133,15 @@ run_autopkgtest() {
     create_autopkgtest_tarball
   fi
 
-  ## Remove any stale package builds so autopkgtest's 'privleap*.deb' glob below
-  ## picks up only this build's output, not a leftover from an earlier version.
-  rm -f -- ../privleap_*.deb ../privleap_*.buildinfo ../privleap_*.changes
+  ## Do not clean up stable package builds automatically, this is the
+  ## end-user's responsibility to avoid data loss.
+
   dpkg-buildpackage -i -us -uc -b || {
     1>&2 echo 'Cannot build privleap deb package!'
     exit 1
   }
   cd ..
-  ## autopkgtest refuses a non-empty --output-dir, so a rerun would abort on the
-  ## previous run's artifacts. Clear it first.
+  ## autopkgtest refuses a non-empty --output-dir.
   rm -rf -- "${privleap_project_dir}/test_artifacts"
   autopkgtest -l "${privleap_project_dir}/privleap-test-log.txt" \
     --output-dir="${privleap_project_dir}/test_artifacts" --apt-upgrade \

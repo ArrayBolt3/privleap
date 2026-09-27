@@ -20,17 +20,7 @@ rcfile="${repo_dir}/debian/tests/coverage/coveragerc"
 ## AUTOPKGTEST_ARTIFACTS might be a relative path.
 artifacts_dir="$(realpath -- "${AUTOPKGTEST_ARTIFACTS:-${repo_dir}/autopkgtest-artifacts}")"
 
-## Create a coverage directory that root reads from or writes into. Use plain
-## mkdir (never -p): it fails on ANY pre-existing entry -- a leftover directory
-## or a symlink an attacker pre-planted -- atomically, with no check-then-create
-## gap. -p instead silently succeeds on an existing symlink-to-dir, and the
-## following chmod would then dereference it (a leaf symlink to /etc would become
-## 'chmod 1777 /etc'; one to a python path would let a sitecustomize be planted
-## and imported as root). The parent (realpath'd artifacts_dir, or a dir made
-## just above) already exists, so -p is not needed. A concurrent attacker who
-## can write inside artifacts_dir could still swap the dir between mkdir and
-## chmod, but under autopkgtest artifacts_dir is root-owned and the testbed is
-## single-tenant, so no such writer exists.
+## Create a coverage directory that root reads from or writes into.
 make_cov_dir() {
   if ! mkdir -- "${1}" 2>/dev/null; then
     printf 'ERROR: coverage dir pre-exists or is not creatable: %s\n' "${1}" 1>&2
@@ -39,54 +29,26 @@ make_cov_dir() {
   chmod "${2}" -- "${1}"
 }
 
-## cov_dir holds the raw coverage DATA and must be world-writable, as the
-## unprivileged clients run by the test suite write their own data files here.
-## Sticky bit so a client cannot rename or replace another account's (or root's)
-## data files. It must hold DATA only -- never anything root later imports; see
-## the bootstrap dir below.
+## cov_dir holds raw coverage data and must be world-writable for the sake of
+## unprivileged clients. Sticky bit prevents undesired deletion.
 cov_dir="${artifacts_dir}/privleap-coverage"
 make_cov_dir "${cov_dir}" 1777
 
-## The suite runs leaprun as unprivileged accounts (via 'sudo -u'), and their
-## coverage must be measured too. That needs three things to reach those
-## processes; without all three the client coverage is silently dropped and the
-## reported total is misleadingly low.
-
-## (1) The coverage bootstrap (sitecustomize.py + coveragerc) must be READABLE
-## by the client accounts. autopkgtest's unshare backend copies the source tree
-## as mode 0770 owned by an unprivileged 'unshare' user, so the client accounts
-## cannot read it there. site.py imports sitecustomize inside a silenced
-## try/except, so the failure is invisible and coverage.process_startup() never
-## runs for the clients. Stage the bootstrap in a world-READABLE dir instead.
-## It must NOT be world-writable and must NOT live under the world-writable
-## cov_dir: root's later 'coverage combine' auto-imports sitecustomize.py from
-## here via PYTHONPATH, so a world-writable bootstrap would let any local
-## account replace it and execute code as root. Keep it root-owned, mode 0755.
+## sitecustomize.py and coveragerc must be readable by unprivileged clients.
 cov_bootstrap_dir="${artifacts_dir}/privleap-coverage-bootstrap"
 make_cov_dir "${cov_bootstrap_dir}" 0755
 cp -- "${repo_dir}/debian/tests/coverage/sitecustomize.py" \
-  "${cov_bootstrap_dir}/sitecustomize.py"
-cp -- "${rcfile}" "${cov_bootstrap_dir}/coveragerc"
+  "${cov_bootstrap_dir}/"
+cp -- "${rcfile}" "${cov_bootstrap_dir}/"
 chmod 644 -- "${cov_bootstrap_dir}/sitecustomize.py" \
   "${cov_bootstrap_dir}/coveragerc"
 rcfile="${cov_bootstrap_dir}/coveragerc"
 
-## (2) The three coverage variables must survive 'sudo -u'. sudo resets the
-## environment and strips PYTHONPATH by default, so an env_keep rule is
-## required. Scope it to 'Defaults:root': the suite always invokes the client
-## sudo AS root, so root is the only invoking user that needs the variables
-## preserved. An unscoped 'Defaults env_keep' would apply to every sudo caller,
-## letting any sudo-capable account smuggle PYTHONPATH / COVERAGE_PROCESS_START
-## (code execution as root via sitecustomize or a coverage plugin) or
-## COVERAGE_FILE (arbitrary root file overwrite) into a root sudo command.
-## Validate before installing, and remove on exit so the rule never outlives the
-## run on a persistent or 'null' testbed.
+## All coverage-activating environment variables must survive 'sudo -u'.
 coverage_sudoers=/etc/sudoers.d/privleap-coverage
 coverage_sudoers_tmp="$(mktemp)"
 trap 'rm -f -- "${coverage_sudoers}" "${coverage_sudoers_tmp}"' EXIT
-## An interrupt must still run the EXIT cleanup, or the sudoers rule is left
-## behind on a persistent host; re-raise via a normal exit so EXIT fires.
-trap 'exit 130' INT TERM
+trap 'exit 130' INT TERM ## triggers cleanup without preventing exit
 printf '%s\n' \
   'Defaults:root env_keep += "COVERAGE_PROCESS_START"' \
   'Defaults:root env_keep += "COVERAGE_FILE"' \
@@ -96,8 +58,6 @@ visudo -cf "${coverage_sudoers_tmp}" >/dev/null
 install -m 0440 -o root -g root -- \
   "${coverage_sudoers_tmp}" "${coverage_sudoers}"
 
-## (3) cov_dir is world-writable (above), so the clients can write their data.
-
 export COVERAGE_PROCESS_START="${rcfile}"
 export COVERAGE_FILE="${cov_dir}/.coverage"
 export PYTHONPATH="${cov_bootstrap_dir}${PYTHONPATH:+:${PYTHONPATH}}"
@@ -105,49 +65,24 @@ export PYTHONPATH="${cov_bootstrap_dir}${PYTHONPATH:+:${PYTHONPATH}}"
 test_rc=0
 ./test/run-test || test_rc="$?"
 
-## Regression guard: the unprivileged clients must have written their own
-## coverage data (files owned by a non-root user). If none did, client coverage
-## capture has broken again and the report would silently exclude the clients --
-## fail loudly rather than publish a misleading total.
+## Make sure some non-root-owned coverage files exist.
 client_cov_count="$(find "${cov_dir}" -maxdepth 1 -type f -name '.coverage.*' \
-  ! -user root -printf '.' | wc -c)"
+  -not -user root -printf '.' | wc -c)"
 if [ "${client_cov_count}" -eq 0 ]; then
-  printf '%s\n' \
-    'ERROR: no coverage data from unprivileged clients was captured.' \
-    'Client coverage (leaprun run via sudo) is being lost; refusing to' \
-    'report a misleading coverage total.' 1>&2
+  printf '%s\n' 'ERROR: no coverage data from unprivileged clients was captured, coverage data is incomplete.' >&2
   exit 1
 fi
-printf 'Captured coverage from %s unprivileged client process(es).\n' \
-  "${client_cov_count}" 1>&2
+printf '%s\n' "Captured coverage from ${client_cov_count} unprivileged client process(es)." >&2
 
-## Root aggregates the data as root, so it must never open a path an unprivileged
-## account controls. cov_dir is world-writable, and coverage.py's combine opens
-## every '.coverage.*' match read-write following symlinks -- so copy only the
-## REGULAR data files (never a symlink/fifo planted there) into a root-owned dir
-## and combine from that. The combined db and the xml/html reports are written to
-## the same root-owned dir, never back into cov_dir.
-cov_out_dir="${artifacts_dir}/privleap-coverage-report"
-make_cov_dir "${cov_out_dir}" 0755
-cov_collect_dir="${cov_out_dir}/data"
-make_cov_dir "${cov_collect_dir}" 0700
-## --no-dereference: if a client file is swapped for a symlink after find
-## matched it (TOCTOU), copy the LINK rather than follow it into an arbitrary
-## file (e.g. /dev/zero, which would hang the copy). Any such link lands in the
-## root-owned collect dir; drop links before combine so it only ever opens the
-## regular data files copied here.
-find "${cov_dir}" -maxdepth 1 -type f -name '.coverage.*' \
-  -exec cp --no-dereference -- '{}' "${cov_collect_dir}/" ';'
-find "${cov_collect_dir}" -maxdepth 1 -type l -delete
-combined_file="${cov_out_dir}/.coverage"
-COVERAGE_FILE="${combined_file}" \
-  python3 -m coverage combine --rcfile="${rcfile}" "${cov_collect_dir}"
-COVERAGE_FILE="${combined_file}" \
-  python3 -m coverage report --rcfile="${rcfile}" 1>&2
-COVERAGE_FILE="${combined_file}" \
-  python3 -m coverage xml --rcfile="${rcfile}" -o "${cov_out_dir}/coverage.xml"
-COVERAGE_FILE="${combined_file}" \
-  python3 -m coverage html --rcfile="${rcfile}" \
-  --directory="${cov_out_dir}/coverage_html"
+## Lock down and cleanup cov_dir before doing file combination.
+chmod 0700 -- "${cov_dir}"
+find "${cov_dir}" -maxdepth 1 -type f '(' -not -name '.coverage.*' \
+  -and -not -name '.coverage' ')' -delete
+find "${cov_dir}" -maxdepth 1 -type l -delete
+
+python3 -m coverage combine --rcfile="${rcfile}" "${cov_dir}"
+python3 -m coverage report --rcfile="${rcfile}" 1>&2
+python3 -m coverage xml --rcfile="${rcfile}" -o "${cov_dir}/coverage.xml"
+python3 -m coverage html --rcfile="${rcfile}" --directory="${cov_dir}/coverage_html"
 
 exit "${test_rc}"

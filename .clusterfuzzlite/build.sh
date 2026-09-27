@@ -46,6 +46,8 @@ cd -- "${SRC}/privleap"
 ## bundles a 3.12 interpreter. atheris + pyinstaller are the base's tools for
 ## its own python; reinstall them for 3.12. sdnotify: privleapd (imported by the
 ## authorization harness) imports it.
+##
+## FIXME: Upgrade to Python 3.13.5.
 export PATH="/opt/py312/bin:${PATH}"
 python3 -m pip install --quiet --upgrade pip
 python3 -m pip install --quiet pyinstaller atheris sdnotify
@@ -102,8 +104,8 @@ for name in fuzz_privleap fuzz_privleap_config fuzz_privleap_authz; do
   fi
   if [ -f "${corpus_root}/dicts/${name}.dict" ]; then
     cp -- "${corpus_root}/dicts/${name}.dict" "${OUT}/${name}.dict"
-    printf '[libfuzzer]\ndict = %s.dict\n' "${name}" \
+    printf '%s\n' "[libfuzzer]" "dict = ${name}.dict" \
       > "${OUT}/${name}.options"
   fi
-  printf 'compiled %s\n' "${name}"
+  printf '%s\n' "compiled ${name}"
 done

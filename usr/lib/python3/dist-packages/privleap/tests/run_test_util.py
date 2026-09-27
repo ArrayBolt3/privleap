@@ -40,6 +40,7 @@ class PlTestGlobal:
     privleap_state_dir: Path = Path("/run/privleapd")
     privleap_state_comm_dir: Path = Path(privleap_state_dir, "comm")
     base_delay: float = 0.1
+    extra_delay: float = base_delay * 2
     privleapd_running: bool = False
     all_asserts_passed = True
     multithreading_test_unexpected_stderr = False
@@ -411,11 +412,12 @@ def compare_privleapd_stderr(
     assert PlTestGlobal.privleapd_proc is not None
     result_good: bool = True
     read_lines: list[str] = []
+    extra_lines: list[str] = []
     for line in assert_line_list:
         while True:
             proc_line = proc_try_readline(
                 PlTestGlobal.privleapd_proc,
-                PlTestGlobal.base_delay,
+                PlTestGlobal.extra_delay,
                 read_stderr=True,
             )
             if proc_line is None:
@@ -429,17 +431,21 @@ def compare_privleapd_stderr(
     while True:
         proc_line = proc_try_readline(
             PlTestGlobal.privleapd_proc,
-            PlTestGlobal.base_delay,
+            PlTestGlobal.extra_delay,
             read_stderr=True,
         )
         if proc_line is None:
             break
-        read_lines.append(proc_line)
+        extra_lines.append(proc_line)
     if not result_good:
         if not quiet:
             logging.error("Unexpected response from server!")
             for line in read_lines:
                 logging.error("%s", line)
+            if len(extra_lines) != 0:
+                logging.error("------ unchecked late-arriving lines")
+                for line in extra_lines:
+                    logging.error("%s", line)
     return result_good
 
 

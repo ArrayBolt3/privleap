@@ -28,6 +28,8 @@ FROM gcr.io/oss-fuzz-base/base-builder-python@sha256:9dd557a4ba0e0cdfbeabc0bb115
 ## build) and put it first on PATH in build.sh. It runs on the base's glibc 2.31
 ## and both parses privleap and bundles cleanly into the compile_python_fuzzer
 ## onefile. Refresh the release/sha together when bumping the interpreter.
+##
+## FIXME: Upgrate to CPython 3.13.5 as that is the version in Debian Trixie.
 ARG PY312_RELEASE=20250818
 ARG PY312_TARBALL=cpython-3.12.11+20250818-x86_64-unknown-linux-gnu-install_only.tar.gz
 ARG PY312_SHA256=98229938166f51deff81b00d71455fac84a57290b71089bd5fe673738557f053
@@ -35,7 +37,7 @@ RUN curl -fsSL -o /tmp/py312.tar.gz \
       "https://github.com/astral-sh/python-build-standalone/releases/download/${PY312_RELEASE}/${PY312_TARBALL}" \
     && echo "${PY312_SHA256}  /tmp/py312.tar.gz" | sha256sum -c - \
     && mkdir -p /opt/py312 \
-    && tar -xzf /tmp/py312.tar.gz -C /opt/py312 --strip-components=1 \
+    && tar -xzf /tmp/py312.tar.gz --directory=/opt/py312 --strip-components=1 \
     && rm /tmp/py312.tar.gz \
     && /opt/py312/bin/python3 --version
 

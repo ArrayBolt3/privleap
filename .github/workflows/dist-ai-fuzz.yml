@@ -29,7 +29,7 @@ on:
     paths:
       - 'usr/lib/python3/dist-packages/**/*.py'
       - 'usr/libexec/privleap/**'
-      - 'usr/bin/privleapd'
+      - 'usr/bin/*'
       - 'etc/pam.d/**'
       - '.github/workflows/dist-ai-fuzz.yml'
   schedule:
