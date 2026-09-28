@@ -62,6 +62,13 @@ if [ ! -d "${tests_dir}" ]; then
   exit 1
 fi
 
+## Shared CFLite smoke-run guard (single source of truth in dist-ai). It
+## bounds-runs each compiled fuzzer with PYTHONPATH + every *_REPO override
+## unset and FAILs the build on a non-zero exit -- catching a frozen-bundle
+## SystemExit(77) silent skip that would otherwise pass vacuously.
+# shellcheck disable=SC1090,SC1091
+source "${SRC}/dist-ai/usr/share/clusterfuzzlite-lib/smoke-run.bash"
+
 ## privleap comes from THIS checkout; pl_testlib from the dist-ai test dir.
 export PYTHONPATH="${SRC}/privleap/usr/lib/python3/dist-packages:${tests_dir}${PYTHONPATH+:${PYTHONPATH}}"
 
@@ -75,22 +82,8 @@ for name in fuzz_privleap fuzz_privleap_config fuzz_privleap_authz; do
     --collect-submodules=privleap \
     --paths="${tests_dir}"
 
-  ## Smoke-run the compiled onefile to catch a SILENT SKIP: a harness that
-  ## cannot resolve its subject in the frozen bundle exits 77 before atheris
-  ## starts, so the fuzz job would pass VACUOUSLY. Run with PRIVLEAP_REPO/
-  ## PYTHONPATH unset (the run container has neither) so only the bundle can
-  ## satisfy the import; a non-zero exit fails the build. Exit-code check only,
-  ## no output parsing (no temp file: no safe-rm in the OSS-Fuzz container).
-  if smoke_out="$( unset PYTHONPATH PRIVLEAP_REPO
-                   "${OUT}/${name}" -runs=100 2>&1 )"; then
-    printf 'smoke-run OK %s\n' "${name}"
-  else
-    smoke_rc=$?
-    printf 'FATAL: %s did not fuzz (exit %s) -- subject unresolved in bundle:\n' \
-      "${name}" "${smoke_rc}" >&2
-    printf '%s\n' "${smoke_out}" >&2
-    exit 1
-  fi
+  ## Smoke-run the compiled onefile to catch a frozen-bundle SILENT SKIP.
+  cflite_smoke_run_fuzzers "${name}"
 
   ## Seed corpus + protocol dictionary: give libFuzzer meaningful starting
   ## inputs and keyword tokens so it reaches deep parser/config branches from
