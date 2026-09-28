@@ -80,7 +80,7 @@ for name in fuzz_privleap fuzz_privleap_config fuzz_privleap_authz; do
 
   ## Smoke-run the compiled onefile to catch a SILENT SKIP: a harness that
   ## cannot resolve its subject in the frozen bundle exits 77 before atheris
-  ## starts, so the fuzz job would pass VACUOUSLY. Run with PRIVLEAP_REPO/
+  ## starts, so the fuzz job would pass incorrectly. Run with PRIVLEAP_REPO/
   ## PYTHONPATH unset (the run container has neither) so only the bundle can
   ## satisfy the import; a non-zero exit fails the build. Exit-code check only,
   ## no output parsing (no temp file: no safe-rm in the OSS-Fuzz container).
@@ -88,6 +88,8 @@ for name in fuzz_privleap fuzz_privleap_config fuzz_privleap_authz; do
                    "${OUT}/${name}" -runs=100 2>&1 )"; then
     printf 'smoke-run OK %s\n' "${name}"
   else
+    ## TODO: Don't we need to check for exit code 77 explicitly here, and use a
+    ## different error message if we get a different error code?
     smoke_rc=$?
     printf 'FATAL: %s did not fuzz (exit %s) -- subject unresolved in bundle:\n' \
       "${name}" "${smoke_rc}" >&2
