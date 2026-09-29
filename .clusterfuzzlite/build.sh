@@ -48,6 +48,9 @@ cd -- "${SRC}/privleap"
 ## authorization harness) imports it.
 ##
 ## FIXME: Upgrade to Python 3.13.5.
+##
+## FIXME: Pin the same versions of these packages as exist in Debian, for
+## higher test fidelity and to dodge supply chain attacks.
 export PATH="/opt/py312/bin:${PATH}"
 python3 -m pip install --quiet --upgrade pip
 python3 -m pip install --quiet pyinstaller atheris sdnotify
