@@ -1,3 +1,101 @@
+commit 42f38acd589b3f415f038a9779172159a30b9694
+Merge: 5eb58ae 753b78a
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Tue Sep 29 09:46:56 2026 -0400
+
+    Merge remote-tracking branch 'refs/remotes/org-ai-assisted/ai'
+
+commit 753b78a23c0713710330e502e6a8b9d828cbd414
+Merge: fac52fd 7412d3f
+Author: assisted-by-ai <assisted-by-ai@users.noreply.github.com>
+Date:   Tue Sep 29 04:27:21 2026 -0400
+
+    Merge arraybolt3/trixie into ai (remaster)
+
+commit 5eb58ae59702b0952b9922b45ce514647a6c2194
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Tue Sep 29 08:06:58 2026 +0000
+
+    bumped changelog version
+
+commit fac52fd0f662d33226ff9c7f4112dddae0d75069
+Author: claude (dev726 bd86980c-217e-4a63-b32c-e714cb85874f) <noreply@anthropic.com>
+Date:   Mon Sep 28 13:20:01 2026 -0400
+
+    Use shared CFLite smoke-run guard from dist-ai
+
+    - replace the inline copy-pasted per-harness smoke-run guard with a source of the shared cflite_smoke_run_fuzzers; dist-ai is already cloned by the CFLite Dockerfile
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit 372e27a8b81893ca1f10185c5bb0b9341cf92599
+Merge: 9500da1 7412d3f
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Mon Sep 28 02:31:24 2026 -0400
+
+    Merge remote-tracking branch 'refs/remotes/ArrayBolt3/arraybolt3/trixie'
+
+commit 7412d3fc593781b707ca61d83e01adb74384d26d
+Author: Aaron Rainbolt <arraybolt3@gmail.com>
+Date:   Sun Sep 27 20:36:20 2026 -0400
+
+    comments
+
+commit c9557230e73f50eb64fdc67f9ac9af8f5ca74383
+Merge: 25a9179 1863eb3
+Author: Aaron Rainbolt <arraybolt3@gmail.com>
+Date:   Sun Sep 27 20:31:33 2026 -0400
+
+    Merge branch 'ai' into arraybolt3/trixie
+
+commit 1863eb3314448aed942bd31f0d626c728be15da0
+Merge: c7f7ec5 9ac4762
+Author: claude (dev711 716949c2-e80f-4729-ad52-744fcd103b35) <noreply@anthropic.com>
+Date:   Sun Sep 27 04:53:19 2026 -0400
+
+    Merge remote-tracking branch 'org-ai-assisted/ai' into ai
+
+commit c7f7ec543842eab8fa48c7dd9789ffff68e343a5
+Author: claude (dev711 716949c2-e80f-4729-ad52-744fcd103b35) <noreply@anthropic.com>
+Date:   Sun Sep 27 04:52:49 2026 -0400
+
+    Fail CFLite build when a fuzzer silently skips
+
+    - Smoke-run each compiled onefile with PRIVLEAP_REPO/PYTHONPATH unset (the run
+      container has neither): a harness that cannot resolve its subject in the
+      bundle exits 77 before atheris starts, so the fuzz job would pass VACUOUSLY.
+      A non-zero exit now fails the build. Prophylactic -- the harnesses import
+      privleap directly today, but pl_testlib keeps an os.path.isfile gate a future
+      refactor could route through; matches sdwdate's guard so silent-green stays
+      impossible for either.
+
+    Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+commit 9ac4762353c1b3d92c144f8cc1a1ff2d93a74f41
+Merge: 5be10ea 9500da1
+Author: assisted-by-ai <assisted-by-ai@users.noreply.github.com>
+Date:   Thu Sep 24 22:50:13 2026 -0400
+
+    Merge master into ai (remaster)
+
+commit 25a917925c37323f2224e84477742444b7341559
+Merge: 9cd91fc 9500da1
+Author: Aaron Rainbolt <arraybolt3@gmail.com>
+Date:   Wed Sep 23 15:40:43 2026 -0400
+
+    Merge branch 'master' into arraybolt3/trixie
+
+commit 9cd91fc01476bcd8b1ea85669b7bb4a5545b16ae
+Author: Aaron Rainbolt <arraybolt3@gmail.com>
+Date:   Wed Sep 23 15:37:52 2026 -0400
+
+    comment
+
+commit 9500da1126201b7a77511869dcae126543165cc2
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Wed Sep 23 15:44:24 2026 +0000
+
+    bumped changelog version
+
 commit ecf14a5577ab1a4f97e0aac4877479199ae400bb
 Merge: ae1e3bf 88cb655
 Author: Patrick Schleizer <adrelanos@whonix.org>
