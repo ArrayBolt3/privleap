@@ -1,7 +1,10 @@
-#!/usr/bin/python3 -su
+#!/usr/bin/python3 -Bsu
 
 # Copyright (C) 2025 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 # See the file COPYING for copying conditions.
+
+## Shell-invocation guard.
+"exec" "bash" "-c" "printf '%s\n' '$0: ERROR: Do not execute this script with bash!' >&2; exit 1"
 
 import sys
 sys.dont_write_bytecode = True
