@@ -155,10 +155,11 @@ def handle_create_request(user_id: str) -> NoReturn:
     elif isinstance(control_msg, PrivleapControlServerDisallowedUserMsg):
         generic_error(
             f"Account {repr(user_id)} is not permitted to have a comm socket. "
-            "An account gains one only when a config file under "
-            "/etc/privleap/conf.d/ authorizes it; see privleap-conf.d(5). "
-            "Grant access there only if intended, as privleap config confers "
-            "privileged access.",
+            "privleap grants one only to a user, or a member of a group, "
+            "authorized by a privleap configuration file; see "
+            "privleap-conf.d(5). To grant access, add a rule under "
+            "/etc/privleap/conf.d/ -- only if intended, as privleap config "
+            "confers privileged access.",
             2,
         )
     elif isinstance(
