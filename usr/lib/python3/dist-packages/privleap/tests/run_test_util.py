@@ -787,7 +787,12 @@ User=privleaptestthree
         b"Comm socket destroyed for account 'XXX_DELETEME_UID_XXX'.\n"
     )
     man_socket_not_permitted: bytes = (
-        b"ERROR: Account 'man' is not permitted to have a comm socket!\n"
+        b"ERROR: Account 'man' is not permitted to have a comm socket. "
+        b"privleap grants one only to a user, or a member of a group, "
+        b"authorized by a privleap configuration file; see "
+        b"privleap-conf.d(5). To grant access, add a rule under "
+        b"/etc/privleap/conf.d/ -- only if intended, as privleap config "
+        b"confers privileged access.\n"
     )
     irc_expected_socket_not_permitted: bytes = (
         b"Account 'irc' is not permitted to have a comm socket, as expected, "
@@ -805,7 +810,11 @@ User=privleaptestthree
     )
     privleaptesttwo_socket_not_permitted: bytes = (
         b"ERROR: Account 'privleaptesttwo' is not permitted to have a comm "
-        + b"socket!\n"
+        b"socket. privleap grants one only to a user, or a member of a group, "
+        b"authorized by a privleap configuration file; see "
+        b"privleap-conf.d(5). To grant access, add a rule under "
+        b"/etc/privleap/conf.d/ -- only if intended, as privleap config "
+        b"confers privileged access.\n"
     )
     privleaptestthree_socket_created: bytes = (
         b"Comm socket created for account 'privleaptestthree'.\n"
