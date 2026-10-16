@@ -7,10 +7,15 @@ set -o errexit
 set -o nounset
 set -o errtrace
 set -o pipefail
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
 
 privleap_project_dir="$(dirname "$(readlink -f "${0}")")"
 target_distribution="trixie"
 autopkgtest_tarball_path="${HOME}/.cache/sbuild/${target_distribution}-amd64.tar.zst"
+test_artifacts_dir="${privleap_project_dir}/test_artifacts"
+test_log_file="${privleap_project_dir}/privleap-test-log.txt"
 
 create_autopkgtest_tarball() {
   mkdir -p ~/.cache/sbuild
@@ -45,20 +50,28 @@ offer_package_install() {
   fi
 }
 
+clean_test_artifacts() {
+  genmkfile deb-cleanup
+  safe-rm --recursive --force -- "${test_artifacts_dir}"
+  safe-rm --force -- "${test_log_file}"
+}
+
 print_usage() {
   local help_info
   help_info='run_autopkgtest: Runs regression tests for privleap using autopkgtest
 Usage:
-  run_autopkgtest [--reset-tarball]
+  run_autopkgtest [--reset-tarball|--clean]
 Options:
   --reset-tarball: Deletes and recreates the tarball used by unshare
-                   for running the tests.'
+    for running the tests.
+  --clean: Delete test artifacts, but do not run the test.'
   1>&2 echo "${help_info}"
 }
 
 run_autopkgtest() {
-  local arg
+  local arg stop_after_clean
   arg="${1:-}"
+  stop_after_clean='false'
   if [ "${arg}" = '--help' ] || [ "${arg}" = '-h' ] || [ "${arg}" = '-?' ]; then
     print_usage
     exit 0
@@ -69,7 +82,9 @@ run_autopkgtest() {
     exit 1
   fi
 
-  if [ "${arg}" = '--reset-tarball' ]; then
+  if [ "${arg}" = '--clean' ]; then
+    stop_after_clean='true'
+  elif [ "${arg}" = '--reset-tarball' ]; then
     rm -f "${autopkgtest_tarball_path}"
   elif [ -n "${arg}" ]; then
     1>&2 echo "Unrecognized argument: '${arg}'. Try 'run_autopkgtest --help' for usage info."
@@ -129,6 +144,11 @@ run_autopkgtest() {
     }
   fi
 
+  clean_test_artifacts
+  if [ "${stop_after_clean}" = 'true' ]; then
+    exit 0
+  fi
+
   if ! [ -f "${autopkgtest_tarball_path}" ]; then
     create_autopkgtest_tarball
   fi
@@ -141,11 +161,8 @@ run_autopkgtest() {
     exit 1
   }
   cd ..
-  ## autopkgtest refuses a non-empty --output-dir.
-  rm -rf -- "${privleap_project_dir}/test_artifacts"
-  autopkgtest -l "${privleap_project_dir}/privleap-test-log.txt" \
-    --output-dir="${privleap_project_dir}/test_artifacts" --apt-upgrade \
-    -B privleap*.deb "${privleap_project_dir}" -- unshare
+  autopkgtest -l "${test_log_file}" --output-dir="${test_artifacts_dir}" \
+    --apt-upgrade -B privleap*.deb "${privleap_project_dir}" -- unshare
   echo "Test complete. Results are stored in ${privleap_project_dir}/privleap-test-log.txt."
 }
 

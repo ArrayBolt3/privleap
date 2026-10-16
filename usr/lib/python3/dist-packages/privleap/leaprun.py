@@ -98,14 +98,20 @@ def print_usage() -> NoReturn:
     """
 
     print(
-        """leaprun [-c|--check] <action_name1> [<action_name2> ...]
+        """\
+leaprun [-c|--check] [--user-override=USER [--user-override-fakeroot-only]] \\
+    [--] <action_name1> [<action_name2> ...]
 
-     -c, --check : Check if the current user is authorized to run an action.
-    action_name1 : The name of the action leaprun should handle. leaprun will
-                   send a signal to trigger the named action (or will ask
-                   privleapd to check if the user can trigger the action).
-                   If using -c or --check, up to 63 action names can be passed
-                   to check them all at once."""
+    -c, --check: Check if the current user is authorized to run an action.
+    --user-override=USER: Explicitly choose the user leaprun will attempt to
+        act as.
+    --user-override-fakeroot-only: Causes a --user-override argument to be
+        ignored unless the FAKEROOTKEY environment variable is set.
+    --: End of options.
+    action_name1: The name of the action leaprun should handle. leaprun will
+        send a signal to trigger the named action (or will ask privleapd to
+        check if the user can trigger the action). If using -c or --check, up
+        to 63 action names can be passed to check them all at once."""
     )
     cleanup_and_exit(1)
 
@@ -412,9 +418,23 @@ def main() -> NoReturn:
     signal.signal(signal.SIGTERM, signal_handler)
 
     end_of_options = False
+    override_user_info: pwd.struct_passwd | None = None
+    override_user_fakeroot_only: bool = False
+
     for arg in sys.argv[1:]:
         if arg in ("-c", "--check") and not end_of_options:
             LeaprunGlobal.check_mode = True
+        elif arg.startswith("--user-override=") and not end_of_options:
+            override_user_str: str = arg.split("=", maxsplit=1)[1]
+            override_user_info = PrivleapCommon.normalize_user_id(
+                override_user_str
+            )
+            if override_user_info is None:
+                generic_error(
+                    f"Account {repr(override_user_str)} does not exist!"
+                )
+        elif arg == "--user-override-fakeroot-only" and not end_of_options:
+            override_user_fakeroot_only = True
         elif arg == "--test" and not end_of_options:
             LeaprunGlobal.test_mode = True
         elif (arg == "--") and not end_of_options:
@@ -426,6 +446,21 @@ def main() -> NoReturn:
         print_usage()
     if len(LeaprunGlobal.signal_name_list) > 1 and not LeaprunGlobal.check_mode:
         print_usage()
+
+    if override_user_info is None and override_user_fakeroot_only:
+        generic_error(
+            "'--user-override-fakeroot-only' is not legal without "
+            + "'--user-override=USER'!"
+        )
+
+    if (
+        override_user_info is not None
+        and (
+            not override_user_fakeroot_only
+            or os.environ.get("FAKEROOTKEY", None) is not None
+        )
+    ):
+        LeaprunGlobal.user_uid = override_user_info.pw_uid
 
     create_output_msg()
     wait_for_comm_socket()

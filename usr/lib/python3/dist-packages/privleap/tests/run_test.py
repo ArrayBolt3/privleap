@@ -2246,6 +2246,133 @@ def run_leaprun_tests() -> None:
         exit_code=1,
         stderr_data=b"ERROR: Signal name 'qwe123!@#' is invalid!\n",
     )
+    # ---
+    leaprun_assert_command(
+        ["leaprun", "--user-override=qwerty", "test-act-multiuser-permit"],
+        exit_code=1,
+        stderr_data=b"ERROR: Account 'qwerty' does not exist!\n"
+    )
+    # ---
+    leaprun_assert_command(
+        ["leaprun", "--user-override=9999", "test-act-multiuser-permit"],
+        exit_code=1,
+        stderr_data=b"ERROR: Account '9999' does not exist!\n"
+    )
+    # ---
+    leaprun_assert_command(
+        ["leaprun", "--user-override=messagebus", "test-act-multiuser-permit"],
+        exit_code=0,
+        stdout_data=b"test-act-multiuser-permit\n"
+    )
+    # ---
+    leaprun_assert_command(
+        [
+            "leaprun",
+            f"--user-override={str(pwd.getpwnam("messagebus").pw_uid)}",
+            "test-act-multiuser-permit",
+        ],
+        exit_code=0,
+        stdout_data=b"test-act-multiuser-permit\n"
+    )
+    # ---
+    leaprun_assert_command(
+        [
+            "leaprun",
+            "--user-override=messagebus",
+            "--",
+            "test-act-multiuser-permit",
+        ],
+        exit_code=0,
+        stdout_data=b"test-act-multiuser-permit\n"
+    )
+    # ---
+    leaprun_assert_command(
+        ["leaprun", "--user-override=bin", "test-act-multiuser-permit"],
+        exit_code=1,
+        stderr_data=PlTestData.test_act_multiuser_permit_unauthorized,
+    )
+    # ---
+    leaprun_assert_command(
+        ["leapctl", "--create", "root"],
+        exit_code=0,
+        stdout_data=PlTestData.root_socket_created,
+    )
+    leaprun_assert_command(
+        [
+            "leaprun",
+            "--user-override=messagebus",
+            "--user-override-fakeroot-only",
+            "test-act-multiuser-permit",
+        ],
+        exit_code=0,
+        stdout_data=b"test-act-multiuser-permit\n"
+    )
+    # ---
+    leaprun_assert_command(
+        [
+            "leaprun",
+            "--user-override=bin",
+            "--user-override-fakeroot-only",
+            "test-act-multiuser-permit",
+        ],
+        exit_code=0,
+        stdout_data=b"test-act-multiuser-permit\n"
+    )
+    leaprun_assert_command(
+        ["leapctl", "--destroy", "root"],
+        exit_code=0,
+        stdout_data=PlTestData.root_socket_destroyed,
+    )
+    # ---
+    leaprun_assert_command(
+        [
+            "env",
+            "FAKEROOTKEY=12345",
+            "leaprun",
+            "--user-override=messagebus",
+            "--user-override-fakeroot-only",
+            "test-act-multiuser-permit",
+        ],
+        exit_code=0,
+        stdout_data=b"test-act-multiuser-permit\n"
+    )
+    # ---
+    leaprun_assert_command(
+        [
+            "env",
+            "FAKEROOTKEY=12345",
+            "leaprun",
+            "--user-override=messagebus",
+            "--user-override-fakeroot-only",
+            "--",
+            "test-act-multiuser-permit",
+        ],
+        exit_code=0,
+        stdout_data=b"test-act-multiuser-permit\n"
+    )
+    # ---
+    leaprun_assert_command(
+        [
+            "env",
+            "FAKEROOTKEY=12345",
+            "leaprun",
+            "--user-override=bin",
+            "--user-override-fakeroot-only",
+            "test-act-multiuser-permit",
+        ],
+        exit_code=1,
+        stderr_data=PlTestData.test_act_multiuser_permit_unauthorized,
+    )
+    # ---
+    leaprun_assert_command(
+        [
+            "leaprun",
+            "--user-override-fakeroot-only",
+            "test-act-multiuser-permit",
+        ],
+        exit_code=1,
+        stderr_data=PlTestData.user_override_fakeroot_only_invalid,
+    )
     ## ---
     stop_privleapd_subprocess()
     leaprun_assert_function(

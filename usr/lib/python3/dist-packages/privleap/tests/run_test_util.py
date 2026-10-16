@@ -827,19 +827,28 @@ User=privleaptestthree
         + b"                communication socket for.\n"
     )
     leaprun_help: bytes = (
-        b"leaprun [-c|--check] <action_name1> [<action_name2> ...]\n"
+        b"leaprun [-c|--check] [--user-override=USER "
+        + b"[--user-override-fakeroot-only]] \\\n"
+        + b"    [--] <action_name1> [<action_name2> ...]\n"
         + b"\n"
-        + b"     -c, --check : Check if the current user is authorized to "
-        + b"run an action.\n"
-        + b"    action_name1 : The name of the action leaprun should handle. "
+        + b"    -c, --check: Check if the current user is authorized to run "
+        + b"an action.\n"
+        + b"    --user-override=USER: Explicitly choose the user leaprun will "
+        + b"attempt to\n"
+        + b"        act as.\n"
+        + b"    --user-override-fakeroot-only: Causes a --user-override "
+        + b"argument to be\n"
+        + b"        ignored unless the FAKEROOTKEY environment variable is "
+        + b"set.\n"
+        + b"    --: End of options.\n"
+        + b"    action_name1: The name of the action leaprun should handle. "
         + b"leaprun will\n"
-        + b"                   send a signal to trigger the named action (or "
-        + b"will ask\n"
-        + b"                   privleapd to check if the user can trigger "
-        + b"the action).\n"
-        + b"                   If using -c or --check, up to 63 action names "
-        + b"can be passed\n"
-        + b"                   to check them all at once.\n"
+        + b"        send a signal to trigger the named action (or will ask "
+        + b"privleapd to\n"
+        + b"        check if the user can trigger the action). If using -c or "
+        + b"--check, up\n"
+        + b"        to 63 action names can be passed to check them all at "
+        + b"once.\n"
     )
     privleapd_run_request_failed: bytes = (
         b"ERROR: Could not request privleapd to run action 'test-act-free'!\n"
@@ -951,6 +960,10 @@ User=privleaptestthree
     test_act_invalid_unauthorized: bytes = (
         b"ERROR: Account 'privleaptestone' (1002) is unauthorized to run "
         + b"action 'test-act-invalid'.\n"
+    )
+    user_override_fakeroot_only_invalid = (
+        b"ERROR: '--user-override-fakeroot-only' is not legal without "
+        + b"'--user-override=USER'!\n"
     )
     test_act_target_user: bytes = (
         b"uid=1002(privleaptestone) gid=1002(privleaptestone) groups=1002("
