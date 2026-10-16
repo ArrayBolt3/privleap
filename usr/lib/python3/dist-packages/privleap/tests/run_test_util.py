@@ -601,11 +601,11 @@ Command=echo abc=def
 AuthorizedUsers=privleaptestone
 
 [action:test-act-rootdata]
-Command=pwd; id; env
+Command=pwd; id; env | sort
 AuthorizedUsers=privleaptestone
 
 [action:test-act-userdata]
-Command=pwd; id; env
+Command=pwd; id; env | sort
 AuthorizedUsers=privleaptestone
 TargetUser=privleaptestone
 
@@ -979,38 +979,40 @@ User=privleaptestthree
     test_act_rootdata: bytes = (
         b"/root\n"
         b"uid=0(root) gid=0(root) groups=0(root)\n"
-        b"SHELL=/usr/bin/bash\n"
+        b"ADT_NORMAL_USER=unshare\n"
         b"AUTOPKGTEST_NORMAL_USER=unshare\n"
-        b"PWD=/root\n"
-        b"LOGNAME=root\n"
+        b"DEBIAN_FRONTEND=noninteractive\n"
         b"HOME=/root\n"
         b"LANG=C.UTF-8\n"
-        b"USER=root\n"
-        b"ADT_NORMAL_USER=unshare\n"
         b"LC_ALL=C\n"
-        b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+        b"LOGNAME=root\n"
         b"MAIL=/var/mail/root\n"
-        b"DEBIAN_FRONTEND=noninteractive\n"
         b"OLDPWD=/\n"
+        b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+        b"PRIVLEAP_CALLER_UID=1002\n"
+        b"PWD=/root\n"
+        b"SHELL=/usr/bin/bash\n"
+        b"USER=root\n"
         b"_=/usr/bin/env\n"
     )
     test_act_userdata: bytes = (
         b"/home/privleaptestone\n"
         b"uid=1002(privleaptestone) gid=1002(privleaptestone) "
         b"groups=1002(privleaptestone)\n"
-        b"SHELL=/usr/bin/bash\n"
+        b"ADT_NORMAL_USER=unshare\n"
         b"AUTOPKGTEST_NORMAL_USER=unshare\n"
-        b"PWD=/home/privleaptestone\n"
-        b"LOGNAME=privleaptestone\n"
+        b"DEBIAN_FRONTEND=noninteractive\n"
         b"HOME=/home/privleaptestone\n"
         b"LANG=C.UTF-8\n"
-        b"USER=privleaptestone\n"
-        b"ADT_NORMAL_USER=unshare\n"
         b"LC_ALL=C\n"
-        b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+        b"LOGNAME=privleaptestone\n"
         b"MAIL=/var/mail/root\n"
-        b"DEBIAN_FRONTEND=noninteractive\n"
         b"OLDPWD=/\n"
+        b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+        b"PRIVLEAP_CALLER_UID=1002\n"
+        b"PWD=/home/privleaptestone\n"
+        b"SHELL=/usr/bin/bash\n"
+        b"USER=privleaptestone\n"
         b"_=/usr/bin/env\n"
     )
     privleapd_help: bytes = (
