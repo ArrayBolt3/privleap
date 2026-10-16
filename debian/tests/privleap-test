@@ -63,7 +63,7 @@ export COVERAGE_FILE="${cov_dir}/.coverage"
 export PYTHONPATH="${cov_bootstrap_dir}${PYTHONPATH:+:${PYTHONPATH}}"
 
 test_rc=0
-./test/run-test || test_rc="$?"
+./test/run-test "$@" || test_rc="$?"
 
 ## Make sure some non-root-owned coverage files exist.
 client_cov_count="$(find "${cov_dir}" -maxdepth 1 -type f -name '.coverage.*' \

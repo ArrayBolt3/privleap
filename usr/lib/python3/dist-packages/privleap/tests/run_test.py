@@ -552,7 +552,7 @@ def run_leapctl_tests() -> None:
         "",
         "Create user for deleted user socket destroy test",
     )
-    leaprun_assert_command(
+    leapctl_assert_command(
         ["leapctl", "--reload"],
         exit_code=0,
         stdout_data=b"privleapd configuration reload successful.\n",
@@ -1582,6 +1582,7 @@ def leaprun_filter_env_var_test_stdout(
                 stdout_part.startswith(b"COVERAGE_PROCESS_START="),
                 stdout_part.startswith(b"COVERAGE_FILE="),
                 stdout_part.startswith(b"PYTHONPATH="),
+                stdout_part.startswith(b"SHLVL="),
             ]
         ):
             continue
@@ -2250,19 +2251,19 @@ def run_leaprun_tests() -> None:
     leaprun_assert_command(
         ["leaprun", "--user-override=qwerty", "test-act-multiuser-permit"],
         exit_code=1,
-        stderr_data=b"ERROR: Account 'qwerty' does not exist!\n"
+        stderr_data=b"ERROR: Account 'qwerty' does not exist!\n",
     )
     # ---
     leaprun_assert_command(
         ["leaprun", "--user-override=9999", "test-act-multiuser-permit"],
         exit_code=1,
-        stderr_data=b"ERROR: Account '9999' does not exist!\n"
+        stderr_data=b"ERROR: Account '9999' does not exist!\n",
     )
     # ---
     leaprun_assert_command(
         ["leaprun", "--user-override=messagebus", "test-act-multiuser-permit"],
         exit_code=0,
-        stdout_data=b"test-act-multiuser-permit\n"
+        stdout_data=b"test-act-multiuser-permit\n",
     )
     # ---
     leaprun_assert_command(
@@ -2272,7 +2273,7 @@ def run_leaprun_tests() -> None:
             "test-act-multiuser-permit",
         ],
         exit_code=0,
-        stdout_data=b"test-act-multiuser-permit\n"
+        stdout_data=b"test-act-multiuser-permit\n",
     )
     # ---
     leaprun_assert_command(
@@ -2283,7 +2284,7 @@ def run_leaprun_tests() -> None:
             "test-act-multiuser-permit",
         ],
         exit_code=0,
-        stdout_data=b"test-act-multiuser-permit\n"
+        stdout_data=b"test-act-multiuser-permit\n",
     )
     # ---
     leaprun_assert_command(
@@ -2305,7 +2306,7 @@ def run_leaprun_tests() -> None:
             "test-act-multiuser-permit",
         ],
         exit_code=0,
-        stdout_data=b"test-act-multiuser-permit\n"
+        stdout_data=b"test-act-multiuser-permit\n",
     )
     # ---
     leaprun_assert_command(
@@ -2316,7 +2317,7 @@ def run_leaprun_tests() -> None:
             "test-act-multiuser-permit",
         ],
         exit_code=0,
-        stdout_data=b"test-act-multiuser-permit\n"
+        stdout_data=b"test-act-multiuser-permit\n",
     )
     leaprun_assert_command(
         ["leapctl", "--destroy", "root"],
@@ -2334,7 +2335,7 @@ def run_leaprun_tests() -> None:
             "test-act-multiuser-permit",
         ],
         exit_code=0,
-        stdout_data=b"test-act-multiuser-permit\n"
+        stdout_data=b"test-act-multiuser-permit\n",
     )
     # ---
     leaprun_assert_command(
@@ -2348,7 +2349,7 @@ def run_leaprun_tests() -> None:
             "test-act-multiuser-permit",
         ],
         exit_code=0,
-        stdout_data=b"test-act-multiuser-permit\n"
+        stdout_data=b"test-act-multiuser-permit\n",
     )
     # ---
     leaprun_assert_command(
@@ -5437,9 +5438,14 @@ def main() -> NoReturn:
     erase_old_privleap_config()
     write_privleap_test_config()
 
-    run_leapctl_tests()
-    run_leaprun_tests()
-    run_privleapd_tests()
+    components_to_test: list[str] = sys.argv[1:]
+
+    if "leapctl" in components_to_test:
+        run_leapctl_tests()
+    if "leaprun" in components_to_test:
+        run_leaprun_tests()
+    if "privleapd" in components_to_test:
+        run_privleapd_tests()
 
     stop_privleapd_subprocess()
     print_result_summary()

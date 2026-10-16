@@ -453,12 +453,9 @@ def main() -> NoReturn:
             + "'--user-override=USER'!"
         )
 
-    if (
-        override_user_info is not None
-        and (
-            not override_user_fakeroot_only
-            or os.environ.get("FAKEROOTKEY", None) is not None
-        )
+    if override_user_info is not None and (
+        not override_user_fakeroot_only
+        or os.environ.get("FAKEROOTKEY", None) is not None
     ):
         LeaprunGlobal.user_uid = override_user_info.pw_uid
 

@@ -16,6 +16,8 @@ target_distribution="trixie"
 autopkgtest_tarball_path="${HOME}/.cache/sbuild/${target_distribution}-amd64.tar.zst"
 test_artifacts_dir="${privleap_project_dir}/test_artifacts"
 test_log_file="${privleap_project_dir}/privleap-test-log.txt"
+tests_control_file="${privleap_project_dir}/debian/tests/control"
+tests_control_template_file="${tests_control_file}.in"
 
 create_autopkgtest_tarball() {
   mkdir -p ~/.cache/sbuild
@@ -54,25 +56,29 @@ clean_test_artifacts() {
   genmkfile deb-cleanup
   safe-rm --recursive --force -- "${test_artifacts_dir}"
   safe-rm --force -- "${test_log_file}"
+  safe-rm --force -- "${tests_control_file}"
 }
 
 print_usage() {
   local help_info
   help_info='run_autopkgtest: Runs regression tests for privleap using autopkgtest
 Usage:
-  run_autopkgtest [--reset-tarball|--clean]
+  run_autopkgtest [--reset-tarball|--clean] [<mode>]
 Options:
   --reset-tarball: Deletes and recreates the tarball used by unshare
     for running the tests.
-  --clean: Delete test artifacts, but do not run the test.'
-  1>&2 echo "${help_info}"
+  --clean: Delete test artifacts, but do not run the test.
+  <mode>: One of "all", "leapctl", "leaprun", or "privleapd". Specifies which
+    component of privleap to test. Mandatory unless --clean is passed.'
+  printf '%s\n' "${help_info}" 1>&2
 }
 
 run_autopkgtest() {
   local arg stop_after_clean
-  arg="${1:-}"
   stop_after_clean='false'
-  if [ "${arg}" = '--help' ] || [ "${arg}" = '-h' ] || [ "${arg}" = '-?' ]; then
+  delete_old_tarball='false'
+  test_component=''
+  if [ "${1:-}" = '--help' ] || [ "${1:-}" = '-h' ] || [ "${1:-}" = '-?' ]; then
     print_usage
     exit 0
   fi
@@ -82,19 +88,36 @@ run_autopkgtest() {
     exit 1
   fi
 
-  if [ "${arg}" = '--clean' ]; then
+  if [ "${1:-}" = '--clean' ]; then
     stop_after_clean='true'
-  elif [ "${arg}" = '--reset-tarball' ]; then
-    rm -f "${autopkgtest_tarball_path}"
-  elif [ -n "${arg}" ]; then
-    1>&2 echo "Unrecognized argument: '${arg}'. Try 'run_autopkgtest --help' for usage info."
-    exit 1
+    shift
+  elif [ "${1:-}" = '--reset-tarball' ]; then
+    delete_old_tarball='true'
+    shift
+  fi
+  if [ "${stop_after_clean}" = 'false' ]; then
+    if [ -z "${1:-}" ]; then
+      printf '%s\n' "ERROR: No test component provided! Try 'run_autopkgtest --help' for usage info."
+      exit 1
+    fi
+    if ! [[ "${1:-}" =~ ^(all|leapctl|leaprun|privleapd)$ ]]; then
+      printf '%s\n' "ERROR: Unrecognized test component '${1:-}' provided!"
+      exit 1
+    fi
+    test_component="${1:-}"
+  fi
+
+  if [ "${delete_old_tarball}" = 'true' ]; then
+    safe-rm -f -- "${autopkgtest_tarball_path}"
   fi
 
   ## Dependency checks
   if ! [ -x '/usr/bin/unshare' ]; then
     1>&2 echo 'unshare is not executable or does not exist!'
     exit 1
+  fi
+  if ! [ -f '/usr/bin/safe-rm' ]; then
+    offer_package_install 'safe-rm'
   fi
   if ! [ -f '/usr/bin/autopkgtest' ]; then
     offer_package_install 'autopkgtest'
@@ -153,8 +176,10 @@ run_autopkgtest() {
     create_autopkgtest_tarball
   fi
 
-  ## Do not clean up stable package builds automatically, this is the
-  ## end-user's responsibility to avoid data loss.
+  sed \
+    "s/@TEST_MODE@/privleap-test-${test_component}/" \
+    "${tests_control_template_file}" \
+    > "${tests_control_file}"
 
   dpkg-buildpackage -i -us -uc -b || {
     1>&2 echo 'Cannot build privleap deb package!'
